@@ -86,8 +86,7 @@
     "vaul": "^1.1.2",
     "z-ai-web-dev-sdk": "^0.0.17",
     "zod": "^4.0.2",
-    "zustand": "^5.0.6",
-    "electron": "^36.3.2"
+    "zustand": "^5.0.6"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -100,6 +99,7 @@
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.5",
     "typescript": "^5",
+    "electron": "^36.3.2",
     "electron-builder": "^26.0.12"
   },
   "optionalDependencies": {
