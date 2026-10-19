@@ -1,0 +1,96 @@
+name: Aura POS Windows Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: aura-pos-windows-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  NODE_ENV: production
+  ELECTRON_CACHE: ${{ github.workspace }}\\.electron-cache
+  ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\\.electron-builder-cache
+
+jobs:
+  build-test-package-release:
+    name: Build, test, package and release Windows EXE
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact pushed revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+          cache: npm
+
+      - name: Install dependencies
+        shell: pwsh
+        run: npm install --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Calculate next semantic version
+        id: version
+        shell: pwsh
+        run: |
+          git fetch --tags --force
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $base = [version]$package.version
+          $tags = @(git tag --list "v*" --sort=-version:refname)
+          $candidate = $base
+          if ($tags.Count -gt 0) {
+            $latestText = ($tags[0] -replace '^v', '')
+            try {
+              $latest = [version]$latestText
+              if ($latest -ge $candidate) { $candidate = [version]::new($latest.Major, $latest.Minor, ($latest.Build + 1)) }
+            } catch { Write-Host "Ignoring non-semver tag $($tags[0])" }
+          }
+          while (git ls-remote --exit-code --tags origin "refs/tags/v$candidate" 2>$null) { $candidate = [version]::new($candidate.Major, $candidate.Minor, ($candidate.Build + 1)) }
+          $version = $candidate.ToString()
+          npm version $version --no-git-tag-version --allow-same-version
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Building Aura_POS_v$version.exe"
+
+      - name: Build Next.js standalone server
+        run: npm run build
+
+      - name: Package Electron NSIS installer
+        run: npm run electron:dist
+
+      - name: Verify exactly one required EXE
+        shell: pwsh
+        run: |
+          $expected = "Aura_POS_v$env:version.exe"
+          $files = @(Get-ChildItem -Path dist -Filter *.exe -File)
+          if ($files.Count -ne 1) { throw "Expected exactly one EXE, found $($files.Count)" }
+          if ($files[0].Name -ne $expected) { throw "Expected $expected, found $($files[0].Name)" }
+          Write-Host "Verified $($files[0].FullName)"
+
+      - name: Upload verified EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Aura_POS_v${{ steps.version.outputs.version }}
+          path: dist/Aura_POS_v${{ steps.version.outputs.version }}.exe
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create immutable GitHub Release and tag
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $asset = "dist/Aura_POS_v$env:version.exe"
+          gh release create "v$env:version" $asset --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Aura POS v$env:version" --generate-notes

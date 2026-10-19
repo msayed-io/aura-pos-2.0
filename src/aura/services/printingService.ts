@@ -6,18 +6,6 @@ import PrintableKitchenInvoice from '../components/invoices/PrintableKitchenInvo
 
 export type InvoiceType = 'delivery' | 'dine_in' | 'kitchen';
 
-// Define the Electron API on the window object for TypeScript
-declare global {
-  interface Window {
-    electronAPI?: {
-      getPrinters: () => Promise<any[]>;
-      print: (args: { printer: string; data: Order; type: InvoiceType }) => Promise<void>;
-      savePrinterSettings: (settings: { cashierPrinter: string; kitchenPrinter: string; }) => Promise<void>;
-      loadPrinterSettings: () => Promise<{ cashierPrinter: string; kitchenPrinter: string; } | null>;
-    };
-  }
-}
-
 interface PrintJob {
   component: React.ReactElement;
 }

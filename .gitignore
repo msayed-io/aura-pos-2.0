@@ -19,6 +19,9 @@ node_modules
 
 # production
 /build
+/dist
+.electron-cache
+.electron-builder-cache
 
 # misc
 .DS_Store
