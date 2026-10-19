@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, ipcMain, Notification } = require('electron');
 const { spawn } = require('node:child_process');
 const { createServer } = require('node:net');
