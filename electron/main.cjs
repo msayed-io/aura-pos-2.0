@@ -1,6 +1,5 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { app, BrowserWindow, ipcMain, Notification } = require('electron');
-const { spawn } = require('node:child_process');
+const { app, BrowserWindow, ipcMain, Notification, utilityProcess } = require('electron');
 const { createServer } = require('node:net');
 const { request } = require('node:http');
 const fs = require('node:fs');
@@ -9,6 +8,19 @@ const path = require('node:path');
 let mainWindow;
 let serverProcess;
 let serverPort;
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  });
+}
 
 const isDev = !app.isPackaged;
 const serverRoot = isDev
@@ -67,13 +79,12 @@ function startNextServer() {
   if (!fs.existsSync(serverEntry)) {
     throw new Error(`Next.js standalone server was not found: ${serverEntry}`);
   }
-  serverProcess = spawn(process.execPath, [serverEntry], {
+  serverProcess = utilityProcess.fork(serverEntry, [], {
     cwd: serverRoot,
     windowsHide: true,
     stdio: isDev ? 'inherit' : 'ignore',
     env: {
       ...process.env,
-      ELECTRON_RUN_AS_NODE: '1',
       NODE_ENV: 'production',
       HOSTNAME: '127.0.0.1',
       PORT: String(serverPort),
@@ -161,10 +172,15 @@ async function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-app.whenReady().then(async () => {
-  await createWindow();
-  app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
-});
+if (hasSingleInstanceLock) {
+  app.whenReady().then(async () => {
+    await createWindow();
+    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  }).catch((error) => {
+    console.error('Aura POS startup failed:', error);
+    app.quit();
+  });
+}
 
 app.on('before-quit', () => {
   app.isQuitting = true;
