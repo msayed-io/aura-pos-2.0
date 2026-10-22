@@ -13,7 +13,7 @@ let serverPort;
 const isDev = !app.isPackaged;
 const serverRoot = isDev
   ? path.join(__dirname, '..', '.next', 'standalone')
-  : path.join(process.resourcesPath, 'app', '.next', 'standalone');
+  : path.join(app.getAppPath(), '.next', 'standalone');
 const serverEntry = path.join(serverRoot, 'server.js');
 const settingsPath = path.join(app.getPath('userData'), 'printer-settings.json');
 

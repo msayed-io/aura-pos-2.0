@@ -109,24 +109,32 @@
   "build": {
     "appId": "com.aura.pos",
     "productName": "Aura POS",
-    "asar": false,
+    "asar": true,
     "directories": { "output": "dist" },
     "files": [
       "electron/**/*",
       ".next/standalone/**/*",
       ".next/static/**/*",
       "public/**/*",
-      "package.json"
+      "package.json",
+      "!node_modules/**/*"
     ],
+    "asarUnpack": [
+      ".next/standalone/node_modules/**/*.node",
+      ".next/standalone/node_modules/@img/**/*"
+    ],
+    "npmRebuild": false,
     "win": {
       "target": [{ "target": "nsis", "arch": ["x64"] }],
-      "artifactName": "Aura_POS_v${version}.exe"
+      "artifactName": "Aura_POS_v${version}.exe",
+      "icon": "public/aura-icon.png"
     },
     "nsis": {
       "oneClick": true,
       "perMachine": false,
       "allowToChangeInstallationDirectory": false,
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "compression": "normal"
   }
 }
