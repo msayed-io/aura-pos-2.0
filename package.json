@@ -120,6 +120,7 @@
       "!node_modules/**/*"
     ],
     "asarUnpack": [
+      ".next/standalone/**/*",
       ".next/standalone/node_modules/**/*.node",
       ".next/standalone/node_modules/@img/**/*"
     ],

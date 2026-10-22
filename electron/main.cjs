@@ -13,7 +13,7 @@ let serverPort;
 const isDev = !app.isPackaged;
 const serverRoot = isDev
   ? path.join(__dirname, '..', '.next', 'standalone')
-  : path.join(app.getAppPath(), '.next', 'standalone');
+  : path.join(process.resourcesPath, 'app.asar.unpacked', '.next', 'standalone');
 const serverEntry = path.join(serverRoot, 'server.js');
 const settingsPath = path.join(app.getPath('userData'), 'printer-settings.json');
 
@@ -78,6 +78,9 @@ function startNextServer() {
       HOSTNAME: '127.0.0.1',
       PORT: String(serverPort),
     },
+  });
+  serverProcess.on('error', (error) => {
+    console.error(`Unable to start local Next.js server at ${serverEntry}:`, error);
   });
   serverProcess.on('exit', (code) => {
     if (code && !app.isQuitting) console.error(`Local Next.js server exited with code ${code}`);
