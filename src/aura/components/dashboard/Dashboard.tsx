@@ -33,7 +33,7 @@ import SearchBar from './ui/SearchBar';
 import ConnectivityBadge from '../ConnectivityBadge';
 
 type DashboardPage = 'orders' | 'reservations' | 'complaints';
-type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'notifications' | 'printing' | 'security' | 'system';
+type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'notifications' | 'printing' | 'security' | 'botai' | 'system';
 
 
 const pageComponents: Record<DashboardPage, React.FC<any>> = {

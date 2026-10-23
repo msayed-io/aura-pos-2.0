@@ -28,7 +28,7 @@ test('only the local base and health API routes are exposed', () => {
   ]);
 });
 
-test('settings expose only the retained POS settings tabs', () => {
+test('settings retain every POS tab and expose the Bot UI scaffold', () => {
   const ast = parse('src/aura/pages/SettingsPage.tsx');
   let tabType;
   const renderedTabs = [];
@@ -39,7 +39,7 @@ test('settings expose only the retained POS settings tabs', () => {
     if (ts.isCaseClause(node) && ts.isStringLiteral(node.expression)) cases.push(node.expression.text);
   });
   assert.ok(tabType && ts.isUnionTypeNode(tabType));
-  const expected = ['menu', 'branding', 'offers', 'coupons', 'pricing', 'notifications', 'printing', 'system'].sort();
+  const expected = ['menu', 'branding', 'offers', 'coupons', 'pricing', 'notifications', 'printing', 'botai', 'system'].sort();
   assert.deepEqual(tabType.types.map((node) => node.literal.text).sort(), expected);
   assert.deepEqual(renderedTabs.sort(), expected);
   assert.deepEqual(cases.sort(), expected);
@@ -76,4 +76,32 @@ test('npm lock root matches every declared dependency group', () => {
 test('local environment template contains only the optional database setting', () => {
   const keys = read('.env.example').split('\n').filter((line) => line.trim() && !line.startsWith('#')).map((line) => line.split('=')[0]);
   assert.deepEqual(keys, ['DATABASE_URL']);
+});
+
+test('Bot UI is wired to settings and caller types without restoring removed engines', () => {
+  const settings = read('src/aura/pages/SettingsPage.tsx');
+  assert.match(settings, /import BotAIPage from ['"]\.\.\/components\/dashboard\/pages\/settings\/BotAIPage['"]/);
+  assert.match(settings, /case 'botai':\s*return <BotAIPage\s*\/>/);
+  for (const file of ['src/aura/App.tsx', 'src/aura/components/dashboard/Dashboard.tsx']) {
+    const ast = parse(file);
+    let tabType;
+    walk(ast, node => {
+      if (ts.isTypeAliasDeclaration(node) && node.name.text === 'SettingsTab') tabType = node.type;
+    });
+    assert.ok(tabType && ts.isUnionTypeNode(tabType));
+    assert.ok(tabType.types.some(node => ts.isLiteralTypeNode(node) && node.literal.text === 'botai'), `${file} must accept botai navigation`);
+  }
+  for (const file of [
+    'src/aura/services/wakzService.ts', 'src/aura/services/geminiService.ts',
+    'src/aura/types/wakzTypes.ts', 'src/app/api/wakz/[...path]/route.ts',
+    'src/app/api/wakz-webhook/route.ts',
+  ]) assert.equal(fs.existsSync(path.join(root, file)), false, `${file} must stay removed`);
+  for (const file of filesIn('src').filter(file => /\.[jt]sx?$/.test(file))) {
+    assert.doesNotMatch(read(file), /wakz|gemini|generativelanguage\.googleapis|@google\/generative-ai/i, `Legacy provider path in ${file}`);
+  }
+  const pkg = JSON.parse(read('package.json'));
+  const dependencies = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies };
+  for (const name of Object.keys(dependencies)) {
+    assert.doesNotMatch(name, /wakz|gemini|generative-ai|baileys|whatsapp-web|z-ai-web-dev-sdk|qrcode/i, `Unexpected engine dependency: ${name}`);
+  }
 });

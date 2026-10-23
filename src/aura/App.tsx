@@ -11,7 +11,7 @@ import OnlineLogPage from './components/dashboard/pages/OnlineLogPage';
 import { useAuth } from './contexts/AuthContext';
 
 type AppView = 'pos' | 'dashboard' | 'analytics' | 'settings' | 'online_log';
-type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'notifications' | 'printing' | 'system';
+type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'notifications' | 'printing' | 'botai' | 'system';
 
 
 const AudioUnlocker = ({ unlockAudio }: { unlockAudio: () => void }) => (

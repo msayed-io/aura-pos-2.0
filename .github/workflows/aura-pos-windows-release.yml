@@ -41,6 +41,9 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      - name: Run regression tests
+        run: npm test
+
       - name: Calculate next semantic version
         id: version
         shell: pwsh

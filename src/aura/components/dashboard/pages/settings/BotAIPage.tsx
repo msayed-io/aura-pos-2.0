@@ -1,0 +1,254 @@
+'use client';
+
+import React, { useState } from 'react';
+import {
+  Bot, QrCode, WifiOff, MessageSquare, Zap, Upload, ChevronDown,
+  AlertCircle, Phone, Clock, Settings, Search, Sparkles, ArrowRight, Save, Plus,
+} from 'lucide-react';
+
+// Presentation only. Do not read legacy integration settings, load a provider,
+// poll a server, persist configuration or generate connection credentials here.
+const inputClass = 'w-full px-4 py-3 border border-gray-200 rounded-lg bg-white text-neo-secondary text-base disabled:cursor-not-allowed disabled:bg-gray-50';
+const buttonClass = 'flex items-center justify-center gap-2 px-4 py-3 bg-neo-primary text-white font-semibold rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]';
+const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+const unavailable = 'غير متاح حتى إضافة المحرك المحلي';
+
+const ScaffoldNotice = () => (
+  <div role="status" className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
+    <div>
+      <p className="text-sm font-semibold text-amber-800">واجهة فقط — المحرك غير مضاف حالياً</p>
+      <p className="text-xs text-amber-700 mt-1">
+        الواجهة محفوظة لبناء مكتبة واتساب والذكاء الاصطناعي المحلي لاحقاً. الربط والرد التلقائي والتوليد والحفظ ورفع الملفات غير متاحة الآن؛ لا يتم إرسال أو حفظ أي بيانات من هذه الصفحة.
+      </p>
+    </div>
+  </div>
+);
+
+const SectionCard = ({ title, icon, children }: {
+  title: string; icon: React.ReactNode; children: React.ReactNode;
+}) => (
+  <section className="bg-white rounded-xl border border-gray-200 p-6">
+    <div className="flex items-center gap-2 mb-4">
+      {icon}<h2 className="text-base font-bold text-neo-secondary">{title}</h2>
+    </div>
+    {children}
+  </section>
+);
+
+const InactiveControls = ({ children }: { children: React.ReactNode }) => (
+  <fieldset disabled title={unavailable} className="min-w-0 m-0 p-0 border-0 space-y-4">
+    {children}
+  </fieldset>
+);
+
+const InactiveToggle = ({ label }: { label: string }) => (
+  <div className="flex items-center justify-between gap-3">
+    <span className="text-sm font-semibold text-neo-secondary">{label}</span>
+    <button type="button" role="switch" aria-checked={false} aria-label={label} disabled title={unavailable}
+      className="relative w-11 h-6 rounded-full bg-gray-300 opacity-50 cursor-not-allowed">
+      <span className="absolute top-0.5 right-5 w-5 h-5 bg-white rounded-full shadow-sm" />
+    </button>
+  </div>
+);
+
+const BotAIPage: React.FC = () => {
+  // Only navigation/expansion state is live. Operational controls stay disabled.
+  const [view, setView] = useState<'overview' | 'personality'>('overview');
+  const [connectionTab, setConnectionTab] = useState<'qr' | 'pairing'>('qr');
+  const [businessHoursExpanded, setBusinessHoursExpanded] = useState(false);
+  const [quickRepliesExpanded, setQuickRepliesExpanded] = useState(false);
+  const [manualEntryExpanded, setManualEntryExpanded] = useState(false);
+
+  if (view === 'personality') {
+    return (
+      <div className="flex flex-col gap-5" dir="rtl">
+        <div className="flex items-center gap-3">
+          <button type="button" onClick={() => setView('overview')}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-gray-100 text-neo-secondary/60">
+            <ArrowRight className="w-5 h-5" /><span className="text-sm font-semibold">رجوع</span>
+          </button>
+          <h1 className="text-xl font-bold text-neo-secondary flex items-center gap-2">
+            <Sparkles className="w-6 h-6 text-neo-primary" />شخصية البوت
+          </h1>
+        </div>
+        <ScaffoldNotice />
+        <SectionCard title="المعلومات الأساسية" icon={<Bot className="w-5 h-5 text-neo-primary" />}>
+          <InactiveControls>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label className="block text-sm font-semibold text-neo-secondary/80">اسم البوت
+                <input type="text" placeholder="مساعد أورا" className={`${inputClass} mt-1.5`} />
+              </label>
+              <label className="block text-sm font-semibold text-neo-secondary/80">اسم النشاط التجاري
+                <input type="text" placeholder="مطعم أورا" className={`${inputClass} mt-1.5`} />
+              </label>
+            </div>
+          </InactiveControls>
+        </SectionCard>
+        <SectionCard title="تعليمات التشغيل" icon={<Zap className="w-5 h-5 text-neo-primary" />}>
+          <InactiveControls>
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs text-neo-secondary/50">التعليمات الأساسية التي تحدد سلوك البوت وشخصيته</p>
+              <button type="button" disabled className={buttonClass}><Sparkles className="w-4 h-4" />توليد تلقائي</button>
+            </div>
+            <textarea aria-label="تعليمات التشغيل" placeholder="اكتب تعليمات تشغيل البوت هنا..." rows={8} className={inputClass} />
+          </InactiveControls>
+        </SectionCard>
+        <SectionCard title="إعدادات الرد" icon={<MessageSquare className="w-5 h-5 text-neo-primary" />}>
+          <InactiveControls>
+            <InactiveToggle label="استخدام الإيموجي في الردود" />
+            <div>
+              <p className="text-sm font-semibold text-neo-secondary/80 mb-2">طول الرد</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {['قصير', 'متوسط', 'طويل', 'تلقائي'].map(label => (
+                  <button type="button" key={label} disabled className="px-4 py-2.5 rounded-lg text-sm font-semibold border-2 border-gray-200 text-neo-secondary/60 disabled:cursor-not-allowed">{label}</button>
+                ))}
+              </div>
+              <p className="text-xs text-neo-secondary/40 mt-1.5">يحدد مدى تفصيل ردود البوت — غير متاح حالياً</p>
+            </div>
+          </InactiveControls>
+        </SectionCard>
+        <SectionCard title="قاعدة المعرفة" icon={<Search className="w-5 h-5 text-neo-primary" />}>
+          <InactiveControls>
+            <div className="relative border-2 border-dashed rounded-xl p-8 text-center border-gray-300 bg-gray-50/50">
+              <Upload className="w-6 h-6 text-gray-400 mx-auto mb-3" />
+              <label className="block text-sm font-semibold text-neo-secondary">رفع ملفات قاعدة المعرفة
+                <input type="file" disabled multiple accept=".pdf,.txt,.docx,.csv,.doc,.rtf,.md,.json,.xlsx,.xls" className="block max-w-full mx-auto mt-3 text-xs" />
+              </label>
+              <p className="text-xs text-neo-secondary/50 mt-2">رفع الملفات والسحب والإفلات غير متاحين حالياً</p>
+            </div>
+          </InactiveControls>
+          <button type="button" onClick={() => setManualEntryExpanded(!manualEntryExpanded)} aria-expanded={manualEntryExpanded} aria-controls="bot-manual-knowledge"
+            className="flex items-center gap-2 text-sm font-semibold text-neo-primary mt-4">
+            <Plus className="w-4 h-4" />إضافة معرفة يدوياً<ChevronDown className="w-4 h-4" />
+          </button>
+          {manualEntryExpanded && (
+            <div id="bot-manual-knowledge" className="mt-3">
+              <InactiveControls>
+                <input aria-label="عنوان المعرفة" type="text" placeholder="عنوان المعرفة" className={inputClass} />
+                <textarea aria-label="محتوى المعرفة" placeholder="محتوى المعرفة" rows={4} className={inputClass} />
+                <button type="button" disabled className={buttonClass}><Plus className="w-4 h-4" />إضافة المعرفة</button>
+              </InactiveControls>
+            </div>
+          )}
+          <p className="text-sm text-neo-secondary/40 text-center py-6 mt-2">لا توجد قاعدة معرفة موصولة حالياً.</p>
+        </SectionCard>
+        <div className="flex items-center gap-3 pt-2">
+          <button type="button" disabled title={unavailable} className={buttonClass}><Save className="w-4 h-4" />حفظ الإعدادات</button>
+          <button type="button" onClick={() => setView('overview')} className="px-6 py-3 bg-gray-100 text-neo-secondary font-semibold rounded-lg text-sm">إلغاء</button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5" dir="rtl">
+      <div>
+        <h1 className="text-2xl font-bold text-neo-secondary flex items-center gap-2"><Bot className="w-7 h-7 text-neo-primary" />البوت والذكاء الاصطناعي</h1>
+        <p className="text-sm text-neo-secondary/50 mt-1">إعدادات واتساب بوت، الرد التلقائي، وقاعدة المعرفة</p>
+      </div>
+      <ScaffoldNotice />
+      <section className="bg-white rounded-xl border border-gray-200 p-5">
+        <div className="flex items-center gap-4">
+          <div className="w-10 h-10 rounded-lg bg-neo-primary/10 flex items-center justify-center flex-shrink-0"><Sparkles className="w-5 h-5 text-neo-primary" /></div>
+          <div className="flex-grow min-w-0">
+            <h2 className="text-base font-bold text-neo-secondary">شخصية البوت</h2>
+            <p className="text-xs text-neo-secondary/50 mt-0.5">تخصيص شخصية البوت، تعليمات التشغيل، وقاعدة المعرفة</p>
+          </div>
+          <button type="button" onClick={() => setView('personality')} className="text-xs font-semibold text-neo-primary px-3 py-1.5 rounded-lg hover:bg-neo-primary/5">تعديل</button>
+        </div>
+        <div className="flex flex-wrap items-center gap-5 mt-4 pt-3 border-t border-gray-100 text-xs text-neo-secondary/40">
+          <span>اسم البوت: لم يحدد</span><span>النشاط التجاري: لم يحدد</span><span>قاعدة المعرفة: غير موصولة</span>
+        </div>
+      </section>
+      <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center"><WifiOff className="w-5 h-5 text-red-400" /></div>
+          <div><h2 className="text-base font-bold text-neo-secondary">اتصال واتساب</h2><p className="text-sm font-semibold text-red-500">غير متصل — لا يوجد محرك</p></div>
+        </div>
+        <div className="p-5">
+          <div className="flex gap-1 bg-gray-100 p-1 rounded-lg mb-5" role="group" aria-label="طريقة ربط واتساب">
+            {(['qr', 'pairing'] as const).map(tab => (
+              <button type="button" key={tab} onClick={() => setConnectionTab(tab)} aria-pressed={connectionTab === tab}
+                className={`flex-1 flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold rounded-md min-h-[44px] ${connectionTab === tab ? 'bg-white text-neo-primary shadow-sm' : 'text-neo-secondary/50'}`}>
+                {tab === 'qr' ? <QrCode className="w-4 h-4" /> : <Phone className="w-4 h-4" />}{tab === 'qr' ? 'رمز QR' : 'رقم الهاتف'}
+              </button>
+            ))}
+          </div>
+          {connectionTab === 'qr' ? (
+            <div className="py-8 text-center">
+              <QrCode className="w-14 h-14 mx-auto text-gray-300 mb-4" />
+              <p className="text-neo-secondary/70 mb-1 text-base font-semibold">ربط واتساب عبر رمز QR</p>
+              <p className="text-sm text-neo-secondary/40 mb-5">عرض رمز الربط غير متاح حتى إضافة المكتبة المحلية</p>
+              <button type="button" disabled title={unavailable} className={`${buttonClass} mx-auto`}><QrCode className="w-5 h-5" />عرض رمز QR</button>
+            </div>
+          ) : (
+            <InactiveControls>
+              <label className="block text-sm font-semibold text-neo-secondary/80">معرف المستخدم (WhatsApp User ID)
+                <input type="text" placeholder="غير متاح حالياً" dir="ltr" className={`${inputClass} mt-1.5`} />
+              </label>
+              <label className="block text-sm font-semibold text-neo-secondary/80">رقم الهاتف (مع رمز الدولة)
+                <input type="tel" placeholder="201012345678" dir="ltr" className={`${inputClass} mt-1.5`} />
+              </label>
+              <button type="button" disabled className={buttonClass}>توليد</button>
+              <div className="bg-gray-50 rounded-xl p-5 text-center border border-gray-100">
+                <Phone className="w-8 h-8 mx-auto text-gray-300 mb-3" /><p className="text-sm text-neo-secondary/40">توليد كود الاقتران غير متاح حالياً</p>
+              </div>
+            </InactiveControls>
+          )}
+        </div>
+      </section>
+      <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="p-5 border-b border-gray-100 flex items-center gap-3"><Settings className="w-5 h-5 text-neo-primary" /><h2 className="text-base font-bold text-neo-secondary">لوحة التحكم</h2></div>
+        <div className="p-5 space-y-4">
+          <div className="p-4 bg-gray-50 rounded-xl"><InactiveToggle label="الرد التلقائي" /><p className="text-xs text-neo-secondary/40 mt-2">الرد على رسائل واتساب غير متاح حالياً</p></div>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <button type="button" onClick={() => setBusinessHoursExpanded(!businessHoursExpanded)} aria-expanded={businessHoursExpanded} aria-controls="bot-business-hours" className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-gray-100">
+              <span className="flex items-center gap-3 text-sm font-semibold"><Clock className="w-5 h-5 text-neo-primary" />ساعات العمل</span><ChevronDown className={`w-4 h-4 ${businessHoursExpanded ? 'rotate-180' : ''}`} />
+            </button>
+            {businessHoursExpanded && (
+              <div id="bot-business-hours" className="p-4 border-t border-gray-200">
+                <InactiveControls>
+                  <InactiveToggle label="تفعيل ساعات العمل" />
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="text-sm">من<input type="time" className={inputClass} dir="ltr" /></label>
+                    <label className="text-sm">إلى<input type="time" className={inputClass} dir="ltr" /></label>
+                  </div>
+                  <p className="text-xs font-semibold text-neo-secondary/70">أيام العمل</p>
+                  <div className="flex flex-wrap gap-1.5">{days.map(day => <button type="button" key={day} disabled className="px-2.5 py-1.5 text-xs font-semibold rounded-md bg-gray-100 text-neo-secondary/40">{day}</button>)}</div>
+                </InactiveControls>
+              </div>
+            )}
+          </div>
+          <div className="border border-gray-200 rounded-xl overflow-hidden">
+            <button type="button" onClick={() => setQuickRepliesExpanded(!quickRepliesExpanded)} aria-expanded={quickRepliesExpanded} aria-controls="bot-quick-replies" className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-gray-100">
+              <span className="flex items-center gap-3 text-sm font-semibold"><Zap className="w-5 h-5 text-neo-primary" />الردود السريعة</span><ChevronDown className={`w-4 h-4 ${quickRepliesExpanded ? 'rotate-180' : ''}`} />
+            </button>
+            {quickRepliesExpanded && (
+              <div id="bot-quick-replies" className="p-4 border-t border-gray-200">
+                <InactiveControls>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <input aria-label="الكلمة المفتاحية" type="text" placeholder="الكلمة المفتاحية" className={inputClass} />
+                    <input aria-label="الرد التلقائي" type="text" placeholder="الرد التلقائي" className={inputClass} />
+                  </div>
+                  <button type="button" disabled className={buttonClass}><Plus className="w-4 h-4" />إضافة</button>
+                  <p className="text-xs text-neo-secondary/40">لا توجد ردود سريعة موصولة حالياً</p>
+                </InactiveControls>
+              </div>
+            )}
+          </div>
+          <div className="p-4 bg-gray-50 rounded-xl">
+            <InactiveControls>
+              <label className="block text-sm font-semibold">سرعة الإرسال
+                <input aria-label="سرعة الإرسال" type="range" min="1" max="10" disabled className="w-full mt-3" />
+              </label>
+              <p className="text-xs text-neo-secondary/40">التحكم في سرعة الإرسال غير متاح حالياً</p>
+            </InactiveControls>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+};
+
+export default BotAIPage;
