@@ -4,12 +4,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { Order, OrderStatus } from '../../../../types';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { DollarSign, ClipboardList, TrendingUp, Activity, Sparkles, AlertTriangle } from 'lucide-react';
+import { DollarSign, ClipboardList, TrendingUp, Activity, AlertTriangle } from 'lucide-react';
 import { useBranding } from '../../../../contexts/BrandingContext';
-import { useAuth } from '../../../../contexts/AuthContext';
 import { fraudDetectionService } from '../../../../services/fraudDetectionService';
 import { aiAnalyticsService } from '../../../../services/aiAnalyticsService';
-import { generateAIManagerSummary } from '../../../../services/geminiService';
 
 interface CombinedViewProps {
   allOrders: Order[];
@@ -31,9 +29,7 @@ const CompactStatCard: React.FC<{ title: string; value: string; subValue?: strin
     </div>
 );
 
-const AIManagerSummary: React.FC<{ allOrders: Order[], totalSales: number }> = ({ allOrders, totalSales }) => {
-    const { currentUser } = useAuth();
-    const [aiMessage, setAiMessage] = useState<string>('');
+const LocalAnalyticsSummary: React.FC<{ allOrders: Order[], totalSales: number }> = ({ allOrders, totalSales }) => {
     const [topItem, setTopItem] = useState<{name: string, count: number} | null>(null);
     const [topCashier, setTopCashier] = useState<{name: string, sales: number} | null>(null);
     const [criticalAlert, setCriticalAlert] = useState<any>(null);
@@ -85,19 +81,8 @@ const AIManagerSummary: React.FC<{ allOrders: Order[], totalSales: number }> = (
             }
         }
 
-        // Call Gemini Model
-        if (totalSales > 0) {
-            setAiMessage('الذكاء الاصطناعي من جوجل يقوم بالتحليل الآن...');
-            generateAIManagerSummary(
-                totalSales,
-                topI || '',
-                topC || '',
-                currentUser?.name || 'مدير النظام'
-            ).then(res => setAiMessage(res));
-        } else {
-            setAiMessage('لا توجد مبيعات كافية اليوم ليتمكن الذكاء الاصطناعي من تحليلها.');
-        }
-    }, [allOrders, totalSales, currentUser]);
+
+    }, [allOrders]);
 
     return (
         <div className="bg-gradient-to-r from-neo-primary/10 via-white/5 to-transparent border border-neo-primary/20 rounded-2xl p-6 mb-6 shadow-[0_0_20px_rgba(var(--neo-primary-rgb),0.1)] relative overflow-hidden">
@@ -106,17 +91,13 @@ const AIManagerSummary: React.FC<{ allOrders: Order[], totalSales: number }> = (
             <div className="flex items-start gap-4 relative z-10">
                 <div className="w-12 h-12 rounded-xl bg-neo-primary/20 flex items-center justify-center text-neo-primary border border-neo-primary/30 flex-shrink-0 relative">
                    <div className="absolute inset-0 bg-neo-primary/20 rounded-xl animate-ping opacity-50"></div>
-                   <Sparkles className="w-6 h-6 animate-pulse" />
+                   <Activity className="w-6 h-6" />
                 </div>
                 
                 <div className="flex-grow">
                     <h2 className="text-xl font-bold text-white mb-1">
-                        رسالة من مدير الذكاء الاصطناعي (Google Gemini)
+                        ملخص أداء اليوم
                     </h2>
-                    <p className="text-gray-300 text-sm mb-4 leading-relaxed max-w-3xl whitespace-pre-wrap font-medium">
-                        {aiMessage}
-                    </p>
-                    
                     <div className="mb-4">
                       <p className="text-gray-400 text-xs leading-relaxed max-w-3xl">
                           ملخص الأرقام: حققنا إيرادات بقيمة <strong className="text-emerald-400">{totalSales.toLocaleString('ar-EG')} ج.م</strong>. 
@@ -192,7 +173,7 @@ const OverviewTab: React.FC<CombinedViewProps> = ({ allOrders }) => {
 
   return (
     <div className="space-y-6 animate-fade-in pb-8">
-      <AIManagerSummary allOrders={allOrders} totalSales={metrics.totalSales} />
+      <LocalAnalyticsSummary allOrders={allOrders} totalSales={metrics.totalSales} />
       
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         <CompactStatCard 

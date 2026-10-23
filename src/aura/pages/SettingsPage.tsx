@@ -9,14 +9,13 @@ import NotificationsPage from '../components/dashboard/pages/settings/Notificati
 import PrintingPage from '../components/dashboard/pages/settings/PrintingPage';
 import BrandingPage from '../components/dashboard/pages/settings/BrandingPage';
 import PricingPage from '../components/dashboard/pages/settings/PricingPage';
-import BotAIPage from '../components/dashboard/pages/settings/BotAIPage';
 import { ArrowLeftOnRectangleIcon, TicketIcon, PrinterIcon, InfoIcon, BellIcon, PaletteIcon, FileTextIcon, ListChecksIcon, SparklesIcon } from '../components/dashboard/Icons';
-import { Bot, LayoutList } from 'lucide-react';
+import { LayoutList } from 'lucide-react';
 import { useDragToScroll } from '../hooks/useDragToScroll';
 
 import ConnectivityBadge from '../components/ConnectivityBadge';
 
-type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'pricing' | 'notifications' | 'printing' | 'botai' | 'system';
+type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'pricing' | 'notifications' | 'printing' | 'system';
 
 interface SettingsPageProps {
     onExit: () => void;
@@ -41,7 +40,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onExit, initialTab }) => {
         { id: 'printing', label: 'الطباعة', icon: <PrinterIcon className="w-5 h-5" /> },
         { id: 'notifications', label: 'الإشعارات', icon: <BellIcon className="w-5 h-5" /> },
         { id: 'pricing', label: 'التسعير الذكي', icon: <SparklesIcon className="w-5 h-5" /> },
-        { id: 'botai', label: 'البوت و AI', icon: <Bot className="w-5 h-5" /> },
         { id: 'system', label: 'معلومات النظام', icon: <InfoIcon className="w-5 h-5" /> },
     ];
 
@@ -61,8 +59,6 @@ const SettingsPage: React.FC<SettingsPageProps> = ({ onExit, initialTab }) => {
                 return <PrintingPage />;
             case 'pricing':
                 return <PricingPage />;
-            case 'botai':
-                return <BotAIPage />;
             case 'system':
                 return <SystemInfoPage />;
             default:
