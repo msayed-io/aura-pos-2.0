@@ -374,6 +374,10 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
         if (newDashboardOrder._isReplay) {
             showToast({ message: 'الطلب موجود مسبقاً؛ لم تُعَد الطباعة. راجع الفاتورة وحالة الطباعة.', type: 'info' });
         } else {
+            if (window.electronAPI?.notifyNewOrder) {
+                void window.electronAPI.notifyNewOrder(newDashboardOrder.displayId)
+                    .catch(error => localStoreClient.report(error, 'pos.new-order-notification'));
+            }
             showToast({ message: `تم حفظ الطلب ${newDashboardOrder.displayId}؛ جارٍ إرسال الفواتير للطباعة.`, type: 'info' });
             const customerInvoiceType = newDashboardOrder.deliveryMethod === 'delivery' ? 'delivery' : 'dine_in';
             const failures: Array<{ reason: unknown }> = [];

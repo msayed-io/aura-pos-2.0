@@ -9,6 +9,7 @@ declare global {
       savePrinterSettings: (settings: { cashierPrinter: string; kitchenPrinter: string }) => Promise<void>;
       loadPrinterSettings: () => Promise<{ cashierPrinter: string; kitchenPrinter: string } | null>;
       showNotification: (payload: { title: string; body: string }) => Promise<void>;
+      notifyNewOrder: (displayId: string) => Promise<boolean>;
     };
   }
 }

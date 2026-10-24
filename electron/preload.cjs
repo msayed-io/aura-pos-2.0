@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   savePrinterSettings: (settings) => ipcRenderer.invoke('printer-settings:save', settings),
   loadPrinterSettings: () => ipcRenderer.invoke('printer-settings:load'),
   showNotification: (payload) => ipcRenderer.invoke('notification:show', payload),
+  notifyNewOrder: (displayId) => ipcRenderer.invoke('orders:new-notification', displayId),
 });

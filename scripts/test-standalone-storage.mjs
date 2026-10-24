@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -17,6 +17,7 @@ for (const forbidden of ['docs', 'tests', 'agent-ctx', 'mini-services', 'electro
   assert.equal(fs.existsSync(path.join(serverRoot, forbidden)), false, `Unexpected repository/private input in standalone: ${forbidden}`);
 }
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-standalone-real-'));
+const shutdownToken = randomBytes(32).toString('hex');
 let server;
 let serverExit;
 let serverOutput = '';
@@ -42,6 +43,7 @@ async function start() {
       ...process.env, NODE_ENV: 'production', HOSTNAME: '127.0.0.1', PORT: String(port),
       AURA_DATA_DIR: dataDir,
       AURA_MIGRATIONS_DIR: path.join(serverRoot, 'prisma/migrations'),
+      AURA_INTERNAL_SHUTDOWN_TOKEN: shutdownToken,
       DATABASE_URL: `file:${path.join(dataDir, 'aura.sqlite').replace(/\\/g, '/')}?connection_limit=1`,
     },
     stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true,
@@ -123,7 +125,18 @@ try {
   assert.equal(replay.body.data._isReplay, true);
   assert.equal((await api('orders.list', {})).body.data.length, initialOrderCount + 1);
   assert.equal((await api('bootstrap', {})).body.data.inventory.stockList.find(entry => entry.id === stock.id).quantity, 1);
-  console.log('REAL STANDALONE STORAGE PASS: migrations/userData, same-origin rejection, HTTP order transaction, SIGKILL/restart, idempotent replay.');
+  const shutdownUrl = `${base}/api/internal/shutdown`;
+  const denied = await fetch(shutdownUrl, { method: 'POST', headers: { Origin: base }, signal: AbortSignal.timeout(5000) });
+  assert.equal(denied.status, 401, 'shutdown without the random session token must be rejected');
+  const wrongOrigin = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: `Bearer ${shutdownToken}`, Origin: 'https://example.invalid' }, signal: AbortSignal.timeout(5000) });
+  assert.equal(wrongOrigin.status, 403, 'shutdown from a non-loopback origin must be rejected even with a token');
+  const noOrigin = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: `Bearer ${shutdownToken}` }, signal: AbortSignal.timeout(5000) });
+  assert.equal(noOrigin.status, 403, 'shutdown without the exact Origin must be rejected even with a token');
+  const checkpoint = await fetch(shutdownUrl, { method: 'POST', headers: { Authorization: `Bearer ${shutdownToken}`, Origin: base }, signal: AbortSignal.timeout(10000) });
+  const checkpointBody = await checkpoint.json();
+  assert.equal(checkpoint.status, 200, JSON.stringify(checkpointBody));
+  assert.deepEqual(checkpointBody, { ok: true, status: 'checkpointed' });
+  console.log('REAL STANDALONE STORAGE PASS: migrations/userData, same-origin rejection, HTTP order transaction, SIGKILL/restart, idempotent replay, protected WAL checkpoint.');
   console.log('Not a printer, Electron IPC, phone or WhatsApp/Gemini connection test.');
 } finally {
   await stopAbruptly();

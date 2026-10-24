@@ -24,9 +24,18 @@ function filesIn(dir) {
 test('only local base, health and the same-origin storage API routes are exposed', () => {
   assert.deepEqual(filesIn('src/app/api').filter((file) => /\/route\.[jt]s$/.test(file)).sort(), [
     'src/app/api/health/route.ts',
+    'src/app/api/internal/shutdown/route.ts',
     'src/app/api/local-store/route.ts',
     'src/app/api/route.ts',
   ]);
+});
+
+test('Electron preload keeps explicit channels only and adds a display-ID-only new-order notice', () => {
+  const preload = read('electron/preload.cjs');
+  const exposed = [...preload.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9]*):\s*\(/gm)].map(match => match[1]);
+  assert.deepEqual(exposed, ['getPrinters', 'print', 'savePrinterSettings', 'loadPrinterSettings', 'showNotification', 'notifyNewOrder']);
+  assert.match(preload, /notifyNewOrder:\s*\(displayId\)\s*=>\s*ipcRenderer\.invoke\('orders:new-notification',\s*displayId\)/);
+  assert.doesNotMatch(preload, /contextBridge\.exposeInMainWorld\('electronAPI',\s*\{[^}]*ipcRenderer[),]/s);
 });
 
 test('settings retain every POS tab and expose the Bot UI scaffold', () => {

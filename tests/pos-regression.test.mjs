@@ -73,6 +73,17 @@ test('static POS contract: confirmed sale clears its cart and retry key before p
   assert.ok(text.indexOf('saleRequestRef.current = null') < text.indexOf('await printOrderInvoice'));
 });
 
+test('static POS contract: OS notification is sent only for a newly confirmed order and contains its display ID', () => {
+  const { calls, text } = finalizeAst();
+  const save = calls.find(call => call.name === 'dashboardOrderService.addOrder');
+  const notification = calls.find(call => call.name.includes('notifyNewOrder'));
+  assert.ok(notification);
+  assert.ok(notification.position > save.position);
+  assert.match(text, /if\s*\(window\.electronAPI\?\.notifyNewOrder\)/);
+  assert.match(text, /notifyNewOrder\(newDashboardOrder\.displayId\)/);
+  assert.ok(text.indexOf('notifyNewOrder') > text.indexOf('الطلب موجود مسبقاً'));
+});
+
 test('static renderer boundary: adapters use the local API and never import Prisma or filesystem', () => {
   const files = [
     'src/aura/components/dashboard/services/dashboardOrderService.ts',
