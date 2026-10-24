@@ -21,9 +21,10 @@ function filesIn(dir) {
   });
 }
 
-test('only the local base and health API routes are exposed', () => {
+test('only local base, health and the same-origin storage API routes are exposed', () => {
   assert.deepEqual(filesIn('src/app/api').filter((file) => /\/route\.[jt]s$/.test(file)).sort(), [
     'src/app/api/health/route.ts',
+    'src/app/api/local-store/route.ts',
     'src/app/api/route.ts',
   ]);
 });

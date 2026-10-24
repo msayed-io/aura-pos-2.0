@@ -255,6 +255,11 @@ export interface MenuItem {
   description: string;
   price: number;
   image: string;
+  /** Legacy category identifiers retained for existing menu records. */
+  category?: string;
+  categoryKey?: string;
+  _originalPrice?: number;
+  _pricingResult?: import('./types/pricingTypes').PricingResult;
   primaryCategory: string; // The main category (can be 'new_release' or a regular category id)
   libraryCategories?: string[]; // For display in library tabs
   isNewRelease?: boolean; // True if it should appear on the homepage
@@ -295,7 +300,7 @@ export interface Offer {
   description: string;
   price: number;
   image: string;
-  categoryKey: 'cat_offers'; // usually fixed
+  categoryKey: string; // usually fixed to cat_offers; retain legacy string values
   isActive?: boolean;
   durationInSeconds?: number | null;
   expiresAt?: number | null;
@@ -409,9 +414,12 @@ export type PromotionType = 'SIMPLE_ANNOUNCEMENT' | 'COUPON_DISCOUNT' | 'FREE_DE
 
 export interface Promotion {
   id: string;
-  type: PromotionType;
-  textKey: string;
-  targetView: 'home' | 'menu' | 'offers';
+  type: PromotionType | 'offer' | 'promotion';
+  title?: string;
+  description?: string;
+  imageUrl?: string;
+  textKey?: string;
+  targetView?: 'home' | 'menu' | 'offers';
   couponCode?: string | null;
   discountPercentage?: number | null;
   discountAmount?: number | null;

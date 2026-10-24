@@ -1,11 +1,6 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "windows"]
 }
 
 datasource db {
@@ -29,4 +24,81 @@ model Post {
   authorId  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model LocalOrder {
+  id          String      @id
+  displayId   String      @unique
+  requestId   String?     @unique
+  createdAt   BigInt
+  isArchived  Boolean     @default(false)
+  stockApplied Boolean    @default(false)
+  data        String
+  items       LocalOrderItem[]
+  @@index([createdAt])
+}
+
+model LocalOrderItem {
+  id      String @id
+  orderId String
+  data    String
+  order   LocalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  @@index([orderId])
+}
+
+model LocalCounter {
+  name  String @id
+  value Int
+}
+
+model LocalInventory {
+  id      String @id
+  quantity Float
+  data    String
+}
+
+model LocalSerial {
+  serialNumber String @id
+  productId    String
+  status       String
+  addedAt      BigInt
+  soldAt       BigInt?
+  orderId      String?
+  data         String
+  @@index([productId, status])
+}
+
+model LocalMenu {
+  id       String
+  kind     String
+  position Int    @default(0)
+  data     String
+  @@id([kind, id])
+  @@index([kind, position])
+}
+
+model LocalCoupon {
+  id         String @id
+  code       String @unique
+  usageCount Int    @default(0)
+  data       String
+}
+
+model LocalCouponUsage {
+  id       String @id
+  couponId String
+  orderId  String
+  timestamp BigInt
+  data     String
+  @@index([couponId, timestamp])
+}
+
+model LocalMetadata {
+  key   String @id
+  value String
+}
+
+model LocalNotice {
+  id   String @id
+  data String
 }

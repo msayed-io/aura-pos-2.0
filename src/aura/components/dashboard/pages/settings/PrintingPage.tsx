@@ -33,10 +33,19 @@ const PrintingPage: React.FC = () => {
         const loadData = async () => {
             setLoading(true);
             try {
-                const availablePrinters = await window.electronAPI.getPrinters();
-                const savedSettings = await window.electronAPI.loadPrinterSettings();
+                const electronAPI = window.electronAPI;
+                if (!electronAPI) return;
+                const availablePrinters = await electronAPI.getPrinters();
+                const savedSettings = await electronAPI.loadPrinterSettings();
                 
-                setPrinters(availablePrinters);
+                setPrinters(availablePrinters.map(printer => ({
+                    name: printer.name,
+                    displayName: printer.displayName ?? printer.name,
+                    description: '',
+                    status: 0,
+                    isDefault: printer.isDefault ?? false,
+                    options: {},
+                })));
                 if (savedSettings) {
                     setSettings(savedSettings);
                 }
@@ -55,7 +64,9 @@ const PrintingPage: React.FC = () => {
         if (!isElectron) return;
         setIsSaving(true);
         try {
-            await window.electronAPI.savePrinterSettings(settings);
+            const electronAPI = window.electronAPI;
+            if (!electronAPI) return;
+            await electronAPI.savePrinterSettings(settings);
             showToast({ message: 'تم حفظ إعدادات الطابعة بنجاح', type: 'success' });
         } catch (error) {
             console.error("Failed to save settings:", error);

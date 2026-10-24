@@ -43,7 +43,7 @@ const LocalAnalyticsSummary: React.FC<{ allOrders: Order[], totalSales: number }
             if (order.status !== OrderStatus.COMPLETED) return;
             
             // Cashier stats
-            const cashier = order.cashierName || 'غير معروف';
+            const cashier = order.cashierId || 'غير معروف';
             if (!cashierSales[cashier]) cashierSales[cashier] = 0;
             cashierSales[cashier] += order.totalPrice;
 
@@ -55,7 +55,7 @@ const LocalAnalyticsSummary: React.FC<{ allOrders: Order[], totalSales: number }
         });
 
         // Get Top Item
-        let topI = null;
+        let topI: string | null = null;
         let maxCount = 0;
         for (const [name, count] of Object.entries(itemCounts)) {
             if (count > maxCount) { maxCount = count; topI = name; }
@@ -63,7 +63,7 @@ const LocalAnalyticsSummary: React.FC<{ allOrders: Order[], totalSales: number }
         if (topI) setTopItem({ name: topI, count: maxCount });
 
         // Get Top Cashier
-        let topC = null;
+        let topC: string | null = null;
         let maxSales = 0;
         for (const [name, sales] of Object.entries(cashierSales)) {
             if (sales > maxSales) { maxSales = sales; topC = name; }
@@ -236,7 +236,7 @@ const OverviewTab: React.FC<CombinedViewProps> = ({ allOrders }) => {
                       <Tooltip 
                           contentStyle={{ backgroundColor: '#09090b', borderColor: '#27272a', borderRadius: '8px', color: '#fff' }}
                           itemStyle={{ color: '#fff' }}
-                          formatter={(value: number) => [`${value.toLocaleString()} ج.م`, 'المبيعات']}
+                          formatter={(value) => [`${Number(value ?? 0).toLocaleString()} ج.م`, 'المبيعات']}
                       />
                       <Area 
                           type="monotone" 

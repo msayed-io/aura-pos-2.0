@@ -13,7 +13,9 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "test:standalone": "node scripts/test-standalone-storage.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
@@ -92,23 +94,27 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "bun-types": "^1.3.4",
+    "electron": "^36.3.2",
+    "electron-builder": "^26.0.12",
     "eslint": "^9",
     "eslint-config-next": "^16.1.1",
+    "socket.io": "4.8.4",
+    "socket.io-client": "4.8.4",
     "tailwindcss": "^4",
     "tw-animate-css": "^1.3.5",
-    "typescript": "^5",
-    "electron": "^36.3.2",
-    "electron-builder": "^26.0.12"
+    "typescript": "^5"
   },
   "optionalDependencies": {
-    "lightningcss-win32-x64-msvc": "1.32.0",
-    "@tailwindcss/oxide-win32-x64-msvc": "4.3.3"
+    "@tailwindcss/oxide-win32-x64-msvc": "4.3.3",
+    "lightningcss-win32-x64-msvc": "1.32.0"
   },
   "build": {
     "appId": "com.aura.pos",
     "productName": "Aura POS",
     "asar": true,
-    "directories": { "output": "dist" },
+    "directories": {
+      "output": "dist"
+    },
     "files": [
       "electron/**/*",
       ".next/standalone/**/*",
@@ -124,7 +130,14 @@
     ],
     "npmRebuild": false,
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
       "artifactName": "Aura_POS_v${version}.exe",
       "icon": "public/aura-icon.png"
     },

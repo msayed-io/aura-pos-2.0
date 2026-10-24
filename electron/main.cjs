@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
-const { app, BrowserWindow, ipcMain, Notification, utilityProcess } = require('electron');
+const { app, BrowserWindow, ipcMain, Notification, utilityProcess, dialog } = require('electron');
 const { createServer } = require('node:net');
 const { request } = require('node:http');
 const fs = require('node:fs');
@@ -27,7 +27,8 @@ const serverRoot = isDev
   ? path.join(__dirname, '..', '.next', 'standalone')
   : path.join(process.resourcesPath, 'app.asar.unpacked', '.next', 'standalone');
 const serverEntry = path.join(serverRoot, 'server.js');
-const settingsPath = path.join(app.getPath('userData'), 'printer-settings.json');
+const dataDir = app.getPath('userData');
+const settingsPath = path.join(dataDir, 'printer-settings.json');
 
 function readSettings() {
   try {
@@ -57,19 +58,37 @@ function findFreePort() {
 function waitForServer(port, timeoutMs = 30000) {
   const started = Date.now();
   return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const retry = () => {
+      if (settled) return;
+      if (Date.now() - started > timeoutMs) return finish(new Error('تعذر تجهيز الخادم المحلي وقاعدة البيانات. راجع سجل التشخيص المحلي.'));
+      clearTimeout(timer);
+      timer = setTimeout(check, 250);
+    };
     const check = () => {
       const req = request({ hostname: '127.0.0.1', port, path: '/api/health', timeout: 1500 }, (res) => {
-        res.resume();
-        if (res.statusCode && res.statusCode < 500) return resolve();
-        retry();
+        let body = '';
+        res.on('data', (chunk) => { if (body.length < 8192) body += chunk.toString(); });
+        res.on('error', retry);
+        res.on('end', () => {
+          let health;
+          try { health = JSON.parse(body); } catch { return retry(); }
+          if (res.statusCode === 200 && health.status === 'ok') return finish();
+          if (health.error?.code) return finish(new Error(`قاعدة البيانات المحلية: ${health.error.message} (${health.error.code})`));
+          retry();
+        });
       });
       req.on('error', retry);
       req.on('timeout', () => req.destroy());
       req.end();
-    };
-    const retry = () => {
-      if (Date.now() - started > timeoutMs) return reject(new Error('Next.js local server did not become ready'));
-      setTimeout(check, 250);
     };
     check();
   });
@@ -79,6 +98,8 @@ function startNextServer() {
   if (!fs.existsSync(serverEntry)) {
     throw new Error(`Next.js standalone server was not found: ${serverEntry}`);
   }
+  fs.mkdirSync(dataDir, { recursive: true });
+  const databaseUrl = `file:${path.join(dataDir, 'aura.sqlite').replace(/\\/g, '/')}?connection_limit=1`;
   serverProcess = utilityProcess.fork(serverEntry, [], {
     cwd: serverRoot,
     windowsHide: true,
@@ -88,6 +109,9 @@ function startNextServer() {
       NODE_ENV: 'production',
       HOSTNAME: '127.0.0.1',
       PORT: String(serverPort),
+      AURA_DATA_DIR: dataDir,
+      AURA_MIGRATIONS_DIR: path.join(serverRoot, 'prisma', 'migrations'),
+      DATABASE_URL: databaseUrl,
     },
   });
   serverProcess.on('error', (error) => {
@@ -178,6 +202,7 @@ if (hasSingleInstanceLock) {
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   }).catch((error) => {
     console.error('Aura POS startup failed:', error);
+    dialog.showErrorBox('تعذر تشغيل Aura POS', error instanceof Error ? error.message : 'تعذر تجهيز قاعدة البيانات المحلية.');
     app.quit();
   });
 }

@@ -9,7 +9,7 @@ import type {
   PricingSafetyLimits,
   PricingConditionType,
   PricingActionType,
-} from '../../../../types/pricingTypes';
+} from '../../../types/pricingTypes';
 import {
   XIcon,
   SpinnerIcon,
@@ -148,12 +148,12 @@ const PricingRuleEditModal: React.FC<PricingRuleEditModalProps> = ({
     });
   }, []);
 
-  const updateConditionParam = useCallback((index: number, key: string, value: string | number | boolean) => {
+  const updateConditionParam = useCallback((index: number, key: string, value: string | number | boolean | number[]) => {
     setForm(prev => {
       const conditions = [...prev.conditions];
       conditions[index] = {
         ...conditions[index],
-        params: { ...conditions[index].params, [key]: value },
+        params: { ...conditions[index].params, [key]: value } as PricingCondition['params'],
       };
       return { ...prev, conditions };
     });
@@ -468,7 +468,7 @@ interface StepConditionsProps {
   addCondition: () => void;
   removeCondition: (index: number) => void;
   updateCondition: (index: number, updates: Partial<PricingCondition>) => void;
-  updateConditionParam: (index: number, key: string, value: string | number | boolean) => void;
+  updateConditionParam: (index: number, key: string, value: string | number | boolean | number[]) => void;
 }
 
 const StepConditions: React.FC<StepConditionsProps> = ({
@@ -539,7 +539,7 @@ const StepConditions: React.FC<StepConditionsProps> = ({
 interface ConditionParamsProps {
   type: PricingConditionType;
   params: Record<string, string | number | boolean>;
-  updateParam: (key: string, value: string | number | boolean) => void;
+  updateParam: (key: string, value: string | number | boolean | number[]) => void;
 }
 
 const ConditionParams: React.FC<ConditionParamsProps> = ({ type, params, updateParam }) => {
@@ -573,7 +573,11 @@ const ConditionParams: React.FC<ConditionParamsProps> = ({ type, params, updateP
       );
 
     case 'DAY_OF_WEEK': {
-      const selectedDays = (Array.isArray(params.days) ? params.days : []) as number[];
+      const selectedDays = Array.isArray(params.days)
+        ? params.days as number[]
+        : typeof params.days === 'string'
+          ? params.days.split(',').map(Number).filter(Number.isInteger)
+          : [];
       return (
         <div className="flex flex-wrap gap-2">
           {DAY_LABELS.map((label, i) => (
@@ -757,7 +761,7 @@ function getDefaultConditionParams(type: PricingConditionType): Record<string, s
     case 'TIME_OF_DAY':
       return { hoursStart: 9, hoursEnd: 17 };
     case 'DAY_OF_WEEK':
-      return { days: [5, 6] }; // Friday, Saturday
+      return { days: '5,6' }; // Friday, Saturday
     case 'LOW_STOCK':
       return { thresholdPercent: 20 };
     case 'EXPIRY_APPROACHING':

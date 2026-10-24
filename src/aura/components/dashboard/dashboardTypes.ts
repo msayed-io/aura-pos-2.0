@@ -1,4 +1,4 @@
-export type OrderStatus = 'Order Received' | 'Preparing' | 'Out for Delivery' | 'Delivered';
+export type OrderStatus = 'Order Received' | 'Preparing' | 'Out for Delivery' | 'Delivered' | 'Cancelled' | 'VOIDED';
 export type PaymentMethod = 'cash' | 'vodafone' | 'instapay' | 'etisalat';
 
 export interface OrderItem {
@@ -7,6 +7,10 @@ export interface OrderItem {
   quantity: number;
   price: number;
   notes?: string;
+  barcode?: string;
+  isWeightBased?: boolean;
+  weight?: number;
+  serialNumbers?: string[];
 }
 
 export interface CustomerInfo {
@@ -38,4 +42,10 @@ export interface Order {
   _source?: 'POS'; // Internal source tracking field
   couponCode?: string; // To track used coupon
   quantity?: number; // Total quantity from new schema
+  cashierId?: string;
+  cashierName?: string;
+  source?: string;
+  orderType?: string;
+  _requestId?: string;
+  _isReplay?: boolean;
 }

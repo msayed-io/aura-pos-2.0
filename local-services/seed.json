@@ -1,0 +1,22 @@
+{
+  "inventory": [
+    {"id":"flour_1","name":"Premium Flour","type":"MATERIAL","unit":"KG","quantity":50,"costPerUnit":15,"lowStockThreshold":10},
+    {"id":"cheese_1","name":"Mozzarella Cheese","type":"MATERIAL","unit":"KG","quantity":20,"costPerUnit":80,"lowStockThreshold":5},
+    {"id":"tomato_sauce","name":"Tomato Sauce","type":"MATERIAL","unit":"LITER","quantity":30,"costPerUnit":25,"lowStockThreshold":5},
+    {"id":"fridge_1","name":"Samsung Fridge","type":"PRODUCT","unit":"PIECE","quantity":5,"costPerUnit":12000,"lowStockThreshold":2},
+    {"id":"washer_1","name":"LG Washer","type":"PRODUCT","unit":"PIECE","quantity":3,"costPerUnit":9000,"lowStockThreshold":2}
+  ],
+  "recipes": [
+    {"id":"pizza_item","name":"Margherita Pizza","description":"Classic pizza","price":150,"image":"","primaryCategory":"pizza","inventoryType":"PRODUCT","recipe":[{"inventoryItemId":"flour_1","quantity":0.5,"unit":"KG"},{"inventoryItemId":"cheese_1","quantity":0.2,"unit":"KG"},{"inventoryItemId":"tomato_sauce","quantity":0.1,"unit":"LITER"}]},
+    {"id":"bundle_offer","name":"Home Appliance Bundle","description":"Fridge + Washer","price":20000,"image":"","primaryCategory":"electronics","inventoryType":"BUNDLE","recipe":[{"inventoryItemId":"fridge_1","quantity":1,"unit":"PIECE"},{"inventoryItemId":"washer_1","quantity":1,"unit":"PIECE"}]}
+  ],
+  "serials": [
+    {"serialNumber":"SN-FRIDGE-001","productId":"fridge_1","status":"AVAILABLE","addedAt":1761350400000},
+    {"serialNumber":"SN-FRIDGE-002","productId":"fridge_1","status":"AVAILABLE","addedAt":1761350400000},
+    {"serialNumber":"SN-WASHER-001","productId":"washer_1","status":"AVAILABLE","addedAt":1761350400000}
+  ],
+  "legacyOrders": [
+    {"id":"o1","displayId":"AURA-1001","ageMs":3600000,"items":[{"id":"m1","name":"برجر أورا سوبريم","quantity":2,"price":120}],"customer":{"name":"عميل نقدي","phone":"-","address":"-"},"status":"Delivered","summary":{"subtotal":240,"deliveryFee":0,"discount":0,"total":240},"isArchived":false,"deliveryMethod":"pickup","paymentMethod":"cash"},
+    {"id":"o2","displayId":"AURA-1002","ageMs":1800000,"items":[{"id":"m3","name":"ساندوتش دجاج راب","quantity":1,"price":85},{"id":"m5","name":"بيبسي كانز","quantity":2,"price":35}],"customer":{"name":"محمد أحمد","phone":"0123456789","address":"بنها"},"status":"Preparing","summary":{"subtotal":155,"deliveryFee":20,"discount":0,"total":175},"isArchived":false,"deliveryMethod":"delivery","paymentMethod":"cash"}
+  ]
+}

@@ -1,20 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { LogEntry, LogActionType, User } from '../../types';
-import { loggingService } from '../../services/loggingService';
-import { useDashboard } from '../../components/dashboard/DashboardContext';
+import { LogEntry, LogActionType, User } from '../types';
+import { loggingService } from '../services/loggingService';
+import { useDashboard } from '../components/dashboard/DashboardContext';
 import { 
     ArrowLeftOnRectangleIcon,
     ShieldExclamationIcon,
     SpinnerIcon,
     FileXIcon,
     TrashIcon,
-} from '../../components/dashboard/Icons';
-import DeleteConfirmationModal from '../../components/dashboard/ui/DeleteConfirmationModal';
-import OrderDetailsModal from '../../components/dashboard/ui/OrderDetailsModal';
-import { Order as DashboardOrder } from '../../components/dashboard/dashboardTypes';
-import { useAuth } from '../../contexts/AuthContext';
-import VoidAuthModal from '../../components/dashboard/ui/VoidAuthModal';
-import { fetchUsers } from '../../components/dashboard/services/userService';
+} from '../components/dashboard/Icons';
+import DeleteConfirmationModal from '../components/dashboard/ui/DeleteConfirmationModal';
+import OrderDetailsModal from '../components/dashboard/ui/OrderDetailsModal';
+import { Order as DashboardOrder } from '../components/dashboard/dashboardTypes';
+import { useAuth } from '../contexts/AuthContext';
+import VoidAuthModal from '../components/dashboard/ui/VoidAuthModal';
+import { fetchUsers } from '../components/dashboard/services/userService';
 
 
 // Helper to convert log entry to a format OrderDetailsModal can understand
@@ -208,7 +208,6 @@ const VoidMonitoringCenter: React.FC<{ onExit: () => void; }> = ({ onExit }) => 
                 allowEdit={false}
                 isVoidView={true}
                 modalTitle={isSuccess ? 'إلغاء طلب ناجح' : 'محاولة إلغاء فاشلة'}
-                approvingManager={isSuccess ? selectedLog?.cashierName : undefined}
             />
 
             <DeleteConfirmationModal

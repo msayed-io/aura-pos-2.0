@@ -102,7 +102,7 @@ const OperationsTab: React.FC<OnlineViewProps> = ({ orders, onNavigateToOnlineLo
                         <YAxis stroke="#64748b" fontSize={12} tickFormatter={(value) => `${value.toLocaleString()}`} tickLine={false} axisLine={false} />
                         <Tooltip 
                           contentStyle={{ background: 'rgba(20,20,20,0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff', textAlign: 'right', backdropFilter: 'blur(10px)' }} 
-                          formatter={(value: number) => [`${value.toLocaleString('ar-EG')} ج.م`, 'المبيعات']} 
+                          formatter={(value) => [`${Number(value ?? 0).toLocaleString('ar-EG')} ج.م`, 'المبيعات']}
                         />
                         <Area type="monotone" dataKey="sales" stroke="#2dd4bf" strokeWidth={3} fillOpacity={1} fill="url(#onlineSalesGradient)" />
                     </AreaChart>
@@ -121,7 +121,7 @@ const OperationsTab: React.FC<OnlineViewProps> = ({ orders, onNavigateToOnlineLo
                           <Pie data={orderTypeData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} stroke="none">
                               {orderTypeData.map((entry, index) => <Cell key={`cell-${index}`} fill={entry.color} />)}
                           </Pie>
-                          <Tooltip formatter={(value: number) => [value, 'عدد الطلبات']} contentStyle={{ background: 'rgba(20,20,20,0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}/>
+                          <Tooltip formatter={(value) => [value ?? 0, 'عدد الطلبات']} contentStyle={{ background: 'rgba(20,20,20,0.9)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '12px', color: '#fff' }}/>
                           <Legend iconType="circle" />
                       </PieChart>
                   </ResponsiveContainer>

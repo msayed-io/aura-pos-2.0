@@ -45,7 +45,7 @@ import { useTranslation } from './contexts/AppContext';
 import { BusinessMode } from './types';
 import { useDragToScroll } from './hooks/useDragToScroll';
 import ConnectivityBadge from './components/ConnectivityBadge';
-import { couponService } from './components/dashboard/services/couponService';
+import { localStoreClient } from './services/localStoreClient';
 
 
 // ============================================================================
@@ -75,6 +75,7 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
     const [hasNewOnlineOrder, setHasNewOnlineOrder] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
     const knownOrderIds = useRef(new Set<string>());
+    const saleRequestRef = useRef<{ signature: string; id: string } | null>(null);
 
     // Shift & Header State
     const [shiftStartTime, setShiftStartTime] = useState<Date | null>(null);
@@ -101,6 +102,23 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
     }, [now, shiftStartTime]);
 
 
+    useEffect(() => {
+        const onStoreError = (event: Event) => {
+            const detail = (event as CustomEvent<{ code?: string }>).detail;
+            showToast({ message: `تعذر تحديث البيانات المحلية (${detail?.code || 'LOCAL_STORE_ERROR'}).`, type: 'error' });
+        };
+        const onStoreNotice = (event: Event) => {
+            const detail = (event as CustomEvent<{ message?: string }>).detail;
+            if (detail?.message) showToast({ message: detail.message, type: 'info' });
+        };
+        window.addEventListener('aura:local-store-error', onStoreError);
+        window.addEventListener('aura:local-store-notice', onStoreNotice);
+        return () => {
+            window.removeEventListener('aura:local-store-error', onStoreError);
+            window.removeEventListener('aura:local-store-notice', onStoreNotice);
+        };
+    }, [showToast]);
+
     // Effect for handling clicks outside of user menu
     // Effect for handling clicks outside of user menu
     useEffect(() => {
@@ -126,7 +144,7 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
             
             setMenu(activeItems);
             setCategories(posCategories);
-            inventoryService.registerMenuItems(activeItems); // Hook inventory to new menu
+            void inventoryService.registerMenuItems(activeItems).catch(error => localStoreClient.report(error, 'inventory.registerMenu'));
         });
 
         const ordersUnsubscribe = dashboardOrderService.subscribe(liveOrders => {
@@ -289,7 +307,8 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
     // AI Insights integration
     // [PRICING ENGINE INTEGRATION] Use pricing engine for upsell recommendation prices
     const upsellRecommendations = useMemo(() => {
-        const rawRecommendations = aiAnalyticsService.getUpsellRecommendations(cartItems, menu);
+        const recommendationItems = cartItems.map(item => ({ ...item, cost: item.cost ?? 0, category: item.category || item.categoryKey || item.primaryCategory }));
+        const rawRecommendations = aiAnalyticsService.getUpsellRecommendations(recommendationItems, menu);
         return rawRecommendations.map(item => {
             const pricingResult = pricingEngine.calculatePrice(item.id, item.price, {
                 quantity: 1,
@@ -326,41 +345,50 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
         const cashierId = currentUser.id;
         const cashierName = currentUser.username;
 
-        const newOrderData = {
+        const orderBody = {
           customer: { name: details.name, phone: details.phone, address: details.address },
-          items: cartItems.map(ci => ({ id: ci.id, name: ci.name, quantity: ci.quantity, price: ci.price, notes: ci.notes })),
+          items: cartItems.map(ci => ({ id: ci.id, name: ci.name, quantity: ci.quantity, price: ci.price, notes: ci.notes, cost: ci.cost, category: ci.category, isWeightBased: ci.isWeightBased })),
           summary: { subtotal: details.subtotal, deliveryFee: details.deliveryFee, discount: details.discount, total: details.total },
-          status: 'Delivered', 
+          status: 'Delivered',
           deliveryMethod: details.deliveryMethod,
           paymentMethod: details.paymentMethod,
           couponCode: details.couponCode
-        } as Omit<Order, 'id' | 'createdAt' | 'isArchived' | 'displayId'>;
-        
-        const newDashboardOrder = await dashboardOrderService.addOrder(newOrderData, cashierId, cashierName);
-
-        // Deduct Inventory using Universal Engine
-        inventoryService.deductStockForOrder(newDashboardOrder);
-
-        if (details.couponCode) {
-            await couponService.incrementCouponUsage(details.couponCode);
-            await couponService.logCouponUsage({
-                couponId: details.couponCode,
-                orderId: newDashboardOrder.displayId,
-                discountApplied: details.discount,
-                customerName: details.name,
-            });
+        };
+        const signature = JSON.stringify({ orderBody, cashierId });
+        if (!saleRequestRef.current || saleRequestRef.current.signature !== signature) {
+            saleRequestRef.current = { signature, id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `sale-${Date.now()}-${Math.random().toString(36).slice(2)}` };
         }
-
+        const newOrderData = { ...orderBody, _requestId: saleRequestRef.current.id } as Omit<Order, 'id' | 'createdAt' | 'isArchived' | 'displayId'>;
+        let newDashboardOrder: Order;
         try {
-            await printOrderInvoice(newDashboardOrder, 'kitchen', logoUrl, cashierId, cashierName);
-            const customerInvoiceType = newDashboardOrder.deliveryMethod === 'delivery' ? 'delivery' : 'dine_in';
-            await printOrderInvoice(newDashboardOrder, customerInvoiceType, logoUrl, cashierId, cashierName);
+            newDashboardOrder = await dashboardOrderService.addOrder(newOrderData, cashierId, cashierName);
         } catch (error) {
-            console.error("Printing failed but order was saved successfully. Error:", error);
+            const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : 'LOCAL_STORE_ERROR';
+            localStoreClient.report(error, 'pos.addOrder');
+            showToast({ message: `تعذر تأكيد حفظ الطلب (${code}). احتُفظ بالسلة؛ أعد المحاولة للتحقق بنفس رقم المحاولة دون إنشاء طلب ثانٍ.`, type: 'error' });
+            return;
         }
-        
-        showToast({ message: 'تم تسجيل الطلب بنجاح!', type: 'success', playSound: true });
+        // The sale is durable now. Printing must not retain this cart or clear a later sale's retry key.
         clearCart();
+        saleRequestRef.current = null;
+        if (newDashboardOrder._isReplay) {
+            showToast({ message: 'الطلب موجود مسبقاً؛ لم تُعَد الطباعة. راجع الفاتورة وحالة الطباعة.', type: 'info' });
+        } else {
+            showToast({ message: `تم حفظ الطلب ${newDashboardOrder.displayId}؛ جارٍ إرسال الفواتير للطباعة.`, type: 'info' });
+            const customerInvoiceType = newDashboardOrder.deliveryMethod === 'delivery' ? 'delivery' : 'dine_in';
+            const failures: Array<{ reason: unknown }> = [];
+            try { await printOrderInvoice(newDashboardOrder, 'kitchen', logoUrl, cashierId, cashierName); }
+            catch (reason) { failures.push({ reason }); }
+            try { await printOrderInvoice(newDashboardOrder, customerInvoiceType, logoUrl, cashierId, cashierName); }
+            catch (reason) { failures.push({ reason }); }
+            if (failures.length > 0) {
+                const firstError = failures[0].reason;
+                const safeMessage = firstError instanceof Error ? firstError.message : 'تعذر إرسال مهمة الطباعة.';
+                showToast({ message: `تم حفظ الطلب ${newDashboardOrder.displayId}، لكن تعذرت ${failures.length === 2 ? 'طباعتا المطبخ والفاتورة' : 'إحدى الطباعة'}. راجع الفاتورة وحالة الطباعة. ${safeMessage}`, type: 'error' });
+            } else {
+                showToast({ message: 'تم تسجيل الطلب بنجاح!', type: 'success', playSound: true });
+            }
+        }
     }, [cartItems, showToast, clearCart, logoUrl, currentUser]);
 
     const handleExit = () => {
@@ -660,9 +688,9 @@ const POSSystem: React.FC<{ onExit: () => void; }> = ({ onExit }) => {
                                                     )} <span className="text-xs text-gray-500">ج.م</span>
                                                 </p>
                                                 {/* [PRICING ENGINE INTEGRATION] Show discount reason if pricing rules applied */}
-                                                {(item as Record<string, unknown>)._pricingResult && ((item as Record<string, unknown>)._pricingResult as { appliedRules: { reason: string }[] }).appliedRules.length > 0 && (
+                                                {item._pricingResult && item._pricingResult.appliedRules.length > 0 && (
                                                     <p className="text-[10px] text-neo-accent font-medium mt-0.5 line-clamp-1">
-                                                        {((item as Record<string, unknown>)._pricingResult as { appliedRules: { reason: string }[] }).appliedRules[0].reason}
+                                                        {item._pricingResult.appliedRules[0].reason}
                                                     </p>
                                                 )}
                                                 {businessMode === BusinessMode.RETAIL && typeof item.stockQuantity === 'number' && (

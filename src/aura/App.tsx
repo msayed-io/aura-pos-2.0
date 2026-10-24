@@ -11,7 +11,8 @@ import OnlineLogPage from './components/dashboard/pages/OnlineLogPage';
 import { useAuth } from './contexts/AuthContext';
 
 type AppView = 'pos' | 'dashboard' | 'analytics' | 'settings' | 'online_log';
-type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'notifications' | 'printing' | 'botai' | 'system';
+type SettingsTab = 'menu' | 'branding' | 'offers' | 'coupons' | 'notifications' | 'printing' | 'security' | 'pricing' | 'botai' | 'system';
+type PageSettingsTab = Exclude<SettingsTab, 'security'>;
 
 
 const AudioUnlocker = ({ unlockAudio }: { unlockAudio: () => void }) => (
@@ -36,7 +37,7 @@ function MainApp() {
   const [currentView, setCurrentView] = useState<AppView>('pos');
   const [isAudioUnlocked, setIsAudioUnlocked] = useState(false);
   const [systemStartTime] = useState(new Date()); // Persists across view changes
-  const [initialSettingsTab, setInitialSettingsTab] = useState<SettingsTab>('menu');
+  const [initialSettingsTab, setInitialSettingsTab] = useState<PageSettingsTab>('menu');
 
 
   const handleLogout = () => {
@@ -53,7 +54,7 @@ function MainApp() {
   };
   const showSettings = (initialTab: SettingsTab = 'menu') => {
     if (currentUser?.accessLevel === 'Admin') {
-      setInitialSettingsTab(initialTab);
+      setInitialSettingsTab(initialTab === 'security' ? 'menu' : initialTab);
       setCurrentView('settings');
     }
   };

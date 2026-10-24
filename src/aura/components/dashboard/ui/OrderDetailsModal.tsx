@@ -6,7 +6,7 @@
 import React, { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import type { Order } from '../dashboardTypes';
-import { User, AccessCode } from '../../../types';
+import { User } from '../../../types';
 import {
     PrinterIcon,
     PencilIcon as Edit,
@@ -67,13 +67,18 @@ const OrderDetailsModal: React.FC<OrderDetailsModalProps> = ({ isOpen, onClose, 
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const { showToast, playSound } = useDashboard();
 
-  const handlePrint = () => {
+  const handlePrint = async () => {
       if (!order) return;
       const cashierId = currentUser?.id;
       const cashierName = currentUser?.username || 'System';
       const invoiceType = order.deliveryMethod === 'delivery' ? 'delivery' : 'dine_in';
       playSound('info'); // Sound for starting print job
-      printOrderInvoice(order, invoiceType, logoUrl, cashierId, cashierName);
+      try {
+          await printOrderInvoice(order, invoiceType, logoUrl, cashierId, cashierName);
+      } catch (error) {
+          const message = error instanceof Error ? error.message : 'تعذر إرسال مهمة الطباعة.';
+          showToast({ message: `تعذرت طباعة الفاتورة. راجع الطلب وحالة الطباعة. ${message}`, type: 'error' });
+      }
   };
 
   const handleOrderUpdated = () => {

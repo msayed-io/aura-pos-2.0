@@ -250,7 +250,7 @@ const ComplaintsPage: React.FC = () => {
                     {/* Left Panel: Details */}
                     <div className="w-3/5">
                         <ComplaintDetailView 
-                            complaint={selectedComplaint}
+                            complaint={selectedComplaint ?? null}
                             onReply={setComplaintToReply}
                             onToggleRead={handleToggleRead}
                             onArchive={setComplaintToArchive}
