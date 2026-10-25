@@ -113,13 +113,19 @@ try {
     $app.Refresh()
     if ($app.HasExited) {
       $smokeErrorCode = 'unavailable'
+      $serviceErrorCode = 'none'
+      $serviceState = 'unknown'
+      $serviceRestartCount = 'unknown'
       if (Test-Path $report) {
         try {
           $earlyReport = Get-Content $report -Raw | ConvertFrom-Json
           if ($earlyReport.errorCode -match '^[A-Z0-9_]{1,48}$') { $smokeErrorCode = $earlyReport.errorCode }
+          if ($earlyReport.serviceErrorCode -match '^[A-Z0-9_]{1,48}$') { $serviceErrorCode = $earlyReport.serviceErrorCode }
+          if ($earlyReport.serviceStateAtExit -match '^[a-z-]{1,24}$') { $serviceState = $earlyReport.serviceStateAtExit }
+          if ($null -ne $earlyReport.serviceRestartCount -and "$($earlyReport.serviceRestartCount)" -match '^\d{1,4}$') { $serviceRestartCount = $earlyReport.serviceRestartCount }
         } catch { $smokeErrorCode = 'unreadable' }
       }
-      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode)."
+      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceRestarts=$serviceRestartCount)."
     }
     Start-Sleep -Milliseconds 500
   }

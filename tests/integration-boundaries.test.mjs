@@ -184,6 +184,11 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /SMOKE_WINDOW_SHOW_TIMEOUT/);
   assert.match(main, /result\.windowShown = mainWindowShowEvents > 0/);
   assert.match(main, /result\.ok = !error && result\.healthReady && result\.databaseReady && result\.windowShown/);
+  assert.doesNotMatch(main, /startupTimeoutMs:\s*installedSmoke/);
+  assert.match(main, /SMOKE_SERVICE_READY_TIMEOUT.*120000/);
+  assert.match(main, /lastWhatsAppServiceErrorCode = errorCode/);
+  assert.match(main, /result\.serviceStateAtExit = serviceSupervisor\.state/);
+  assert.match(main, /result\.serviceRestartCount = serviceSupervisor\.restartCount/);
   assert.match(main, /SMOKE_RENDERER_METRICS_MISSING/);
   assert.match(main, /SMOKE_SERVER_METRICS_MISSING/);
   assert.match(main, /monitorEventLoopDelay\(\{ resolution: 1 \}\)/);
@@ -201,6 +206,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
   assert.match(windowsSmoke, /'windowShown'/);
   assert.match(windowsSmoke, /smokeError=\$smokeErrorCode/);
+  assert.match(windowsSmoke, /serviceError=\$serviceErrorCode/);
+  assert.match(windowsSmoke, /serviceState=\$serviceState/);
+  assert.match(windowsSmoke, /serviceRestarts=\$serviceRestartCount/);
   const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
   const smokeEnvironmentSetup = windowsSmoke.indexOf("$env:AURA_INSTALLED_SMOKE = '1'");
   assert.ok(smokeEnvironmentSetup >= 0 && smokeEnvironmentSetup < installerStart, 'NSIS finish-page app must inherit the installed-smoke environment.');

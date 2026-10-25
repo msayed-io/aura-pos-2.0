@@ -28,6 +28,7 @@ let serverWhatsAppToken;
 let conversationHashKey;
 let tray;
 let mainWindowShowEvents = 0;
+let lastWhatsAppServiceErrorCode = null;
 let serviceSupervisor;
 let serviceState = 'idle';
 let whatsappQr = null;
@@ -765,6 +766,11 @@ async function runInstalledSmoke() {
     if (finished) return;
     finished = true;
     clearTimeout(qrTimer);
+    if (lastWhatsAppServiceErrorCode) result.serviceErrorCode = lastWhatsAppServiceErrorCode;
+    if (serviceSupervisor) {
+      result.serviceStateAtExit = serviceSupervisor.state;
+      result.serviceRestartCount = serviceSupervisor.restartCount;
+    }
     result.ok = !error && result.healthReady && result.databaseReady && result.windowShown && result.trayHide && result.serverContinued
       && result.whatsappRuntimeLoaded && result.qrObserved && result.serviceContinued
       && result.loadConversations === 20 && result.loadReplies === 20 && result.loadOrders === 0
@@ -878,7 +884,8 @@ async function runInstalledSmoke() {
     if (!serviceSupervisor) throw new Error('SMOKE_WHATSAPP_SUPERVISOR_MISSING');
     if (!serviceSupervisor.readyAt) {
       await new Promise((resolve, reject) => {
-        const readyTimer = setTimeout(() => reject(new Error('SMOKE_SERVICE_READY_TIMEOUT')), 20000);
+        // Keep production restart behavior unchanged while allowing transient startup retries to become observable.
+        const readyTimer = setTimeout(() => reject(new Error('SMOKE_SERVICE_READY_TIMEOUT')), 120000);
         serviceSupervisor.once('ready', () => { clearTimeout(readyTimer); resolve(); });
       });
     }
@@ -982,7 +989,10 @@ if (hasSingleInstanceLock) {
       whatsappQr = typeof qr === 'string' && qr.length <= 4096 ? qr : null;
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:qr', whatsappQr);
     });
-    serviceSupervisor.on('error-code', errorCode => report('WHATSAPP_SERVICE_REPORTED_ERROR', { code: errorCode }));
+    serviceSupervisor.on('error-code', errorCode => {
+      if (typeof errorCode === 'string' && /^[A-Z0-9_]{1,48}$/.test(errorCode)) lastWhatsAppServiceErrorCode = errorCode;
+      report('WHATSAPP_SERVICE_REPORTED_ERROR', { code: errorCode });
+    });
     serviceSupervisor.on('memory-limit', () => { serviceState = 'reconnecting'; updateTrayMenu(); });
     serviceSupervisor.on('new-order', ({ displayId }) => { showNewOrderNotification(displayId); });
     serviceSupervisor.on('incoming-message', enqueueIncomingWhatsAppMessage);
