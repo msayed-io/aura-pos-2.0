@@ -19,6 +19,46 @@ $env:APPDATA = Join-Path $profile 'Roaming'
 $env:LOCALAPPDATA = Join-Path $profile 'Local'
 New-Item -ItemType Directory -Force -Path $env:APPDATA, $env:LOCALAPPDATA | Out-Null
 
+function Get-SafeProcessRole {
+  param([AllowEmptyString()][string]$CommandLine)
+  if ([string]::IsNullOrWhiteSpace($CommandLine)) { return 'other' }
+  $typeMatches = [regex]::Matches($CommandLine, '(?:^|\s)--type=([A-Za-z0-9_-]+)(?=\s|$)')
+  if ($typeMatches.Count -ne 1) { return 'other' }
+  switch ($typeMatches[0].Groups[1].Value) {
+    'renderer' { return 'renderer' }
+    'gpu-process' { return 'gpu' }
+    'utility' { return 'utility' }
+    'zygote' { return 'zygote' }
+    default { return 'other' }
+  }
+}
+
+function Get-SafeSmokeDiagnostics {
+  param([string]$reportPath)
+  try {
+    if (!(Test-Path -LiteralPath $reportPath -PathType Leaf)) { return $null }
+    $smoke = Get-Content -LiteralPath $reportPath -Raw | ConvertFrom-Json -ErrorAction Stop
+    $restartValue = 0
+    $restartCount = if ([int]::TryParse([string]$smoke.serviceRestartCount, [ref]$restartValue) -and $restartValue -ge 0 -and $restartValue -le 1000) { $restartValue } else { $null }
+    $servicePidValue = 0
+    $servicePid = if ([int]::TryParse([string]$smoke.servicePidAtExit, [ref]$servicePidValue) -and $servicePidValue -gt 0) { $servicePidValue } else { $null }
+    $eventCodes = @($smoke.serviceSupervisorLogCodes | Where-Object { $_ -is [string] -and $_ -cmatch '^SERVICE_[A-Z0-9_]{1,48}$' } | Select-Object -Last 12)
+    [pscustomobject]@{
+      reportAvailable = $true
+      serviceRestartCount = $restartCount
+      servicePidAtExit = $servicePid
+      serviceSupervisorLogCodes = $eventCodes
+    }
+  } catch {
+    [pscustomobject]@{
+      reportAvailable = $false
+      serviceRestartCount = $null
+      servicePidAtExit = $null
+      serviceSupervisorLogCodes = @()
+    }
+  }
+}
+
 function Get-InstalledProcessSnapshot {
   $allProcesses = @(Get-CimInstance Win32_Process)
   $trackedIds = [System.Collections.Generic.HashSet[int]]::new()
@@ -53,6 +93,7 @@ function Get-InstalledProcessSnapshot {
       processId = [int]$_.ProcessId
       parentProcessId = [int]$_.ParentProcessId
       imageName = [System.IO.Path]::GetFileNameWithoutExtension([string]$_.Name)
+      processRole = if ([int]$_.ProcessId -eq [int]$app.Id) { 'main' } else { Get-SafeProcessRole -CommandLine ([string]$_.CommandLine) }
       creationTimeUtc = [string]$creation
       cpuSeconds = [math]::Round((([double]$_.KernelModeTime + [double]$_.UserModeTime) / 10000000), 3)
       workingSetBytes = [double]$_.WorkingSetSize
@@ -269,6 +310,7 @@ try {
       processIds = $snapshot.processIds
       processImageNames = $snapshot.processImageNames
       processIdentities = $snapshot.processIdentities
+      processDetails = $snapshot.processDetails
       handleCount = $snapshot.handleCount
       workingSetMB = [math]::Round($snapshot.workingSetBytes / 1MB, 1)
       privateMemoryMB = [math]::Round($snapshot.privateMemoryBytes / 1MB, 1)
@@ -501,7 +543,38 @@ try {
   }
   Write-Host "Installed smoke passed; DB bytes=$($db.Length); Baileys=$($baileys.version); load p99 Main/server/renderer=$($ready.mainEventLoopP99Ms)/$($ready.serverEventLoopP99Ms)/$($ready.rendererEventLoopP99Ms)ms; idle app CPU=$idleApplicationCpuPercent%; system CPU=$idleSystemCpuPercent%; private memory peak growth=$privatePeakGrowthPercent%; handle peak growth=$peakHandleGrowthPercent%; processes stable=$processCountStable; process identities stable=$processIdentityStable; WhatsApp service peak=$($smoke.whatsappServiceMemoryMb)MB."
 } catch {
-  if (($resourceSamples.Count -gt 0 -or $null -ne $processTreeChangeDiagnostics) -and !(Test-Path -LiteralPath $resourceSamplePath)) {
+  $failureMessage = [string]$_.Exception.Message
+  $failureCode = 'installed-smoke-failure'
+  if ($failureMessage.StartsWith('Handle growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'handle-growth-limit' }
+  elseif ($failureMessage.StartsWith('Private memory peak growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'private-memory-growth-limit' }
+  elseif ($failureMessage.StartsWith('Installed process count changed during soak:', [System.StringComparison]::Ordinal)) { $failureCode = 'process-count-changed' }
+  elseif ($failureMessage.StartsWith('Installed process identities changed during soak', [System.StringComparison]::Ordinal)) { $failureCode = 'process-identities-changed' }
+  elseif ($failureMessage.StartsWith('Application process tree changed during CPU sampling', [System.StringComparison]::Ordinal)) { $failureCode = 'process-tree-change-during-cpu-sampling' }
+  elseif ($failureMessage.StartsWith('Installed app idle CPU exceeded 2%', [System.StringComparison]::Ordinal)) { $failureCode = 'idle-cpu-limit' }
+  if ($app) {
+    try {
+      $app.Refresh()
+      if (!$app.HasExited -and !(Test-Path -LiteralPath $report -PathType Leaf)) {
+        if (!(Test-Path -LiteralPath $stopSignal)) { New-Item -ItemType File -Path $stopSignal -Force | Out-Null }
+        $diagnosticDeadline = (Get-Date).AddSeconds(8)
+        while (!(Test-Path -LiteralPath $report -PathType Leaf) -and (Get-Date) -lt $diagnosticDeadline) {
+          $app.Refresh()
+          if ($app.HasExited) { break }
+          Start-Sleep -Milliseconds 250
+        }
+      }
+    } catch { Write-Host 'Could not request or wait for the installed smoke diagnostic report.' }
+  }
+  $safeSmokeDiagnostics = Get-SafeSmokeDiagnostics -reportPath $report
+  if (Test-Path -LiteralPath $resourceSamplePath -PathType Leaf) {
+    try {
+      $storedReport = Get-Content -LiteralPath $resourceSamplePath -Raw | ConvertFrom-Json -ErrorAction Stop
+      $storedReport | Add-Member -NotePropertyName gateFailureCode -NotePropertyValue $failureCode -Force
+      $storedReport | Add-Member -NotePropertyName installedSmokeDiagnostics -NotePropertyValue $safeSmokeDiagnostics -Force
+      if ($null -ne $processTreeChangeDiagnostics) { $storedReport | Add-Member -NotePropertyName processTreeChange -NotePropertyValue $processTreeChangeDiagnostics -Force }
+      $storedReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resourceSamplePath -Encoding utf8
+    } catch { Write-Host 'Could not annotate the Windows resource artifact with safe failure diagnostics.' }
+  } elseif ($resourceSamples.Count -gt 0 -or $null -ne $processTreeChangeDiagnostics) {
     $partialReason = 'installed-smoke-failure'
     if ($null -ne $processTreeChangeDiagnostics) { $partialReason = 'process-tree-change-during-cpu-sampling' }
     $partialReport = [pscustomobject]@{
@@ -509,11 +582,13 @@ try {
       os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
       partial = $true
       partialReason = $partialReason
+      gateFailureCode = $failureCode
       sampleCount = $resourceSamples.Count
+      installedSmokeDiagnostics = $safeSmokeDiagnostics
       processTreeChange = $processTreeChangeDiagnostics
       samples = $resourceSamples
     }
-    try { $partialReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resourceSamplePath -Encoding utf8 }
+    try { $partialReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resourceSamplePath -Encoding utf8 }
     catch { Write-Host 'Could not persist partial Windows resource diagnostics.' }
   }
   throw
