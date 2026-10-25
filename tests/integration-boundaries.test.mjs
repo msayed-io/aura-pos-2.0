@@ -195,6 +195,11 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /soakDurationMs >= 10 \* 60 \* 1000/);
   assert.match(main, /result\.whatsappServiceMemoryMb = Math\.max/);
   const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
+  const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
+  const smokeEnvironmentSetup = windowsSmoke.indexOf("$env:AURA_INSTALLED_SMOKE = '1'");
+  assert.ok(smokeEnvironmentSetup >= 0 && smokeEnvironmentSetup < installerStart, 'NSIS finish-page app must inherit the installed-smoke environment.');
+  assert.match(windowsSmoke, /Using NSIS-launched installed app/);
+  assert.match(windowsSmoke, /NSIS did not auto-launch the installed app/);
   assert.match(windowsSmoke, /AddMinutes\(10\)/);
   assert.match(windowsSmoke, /privatePeakGrowthPercent -gt 10\.0/);
   assert.match(windowsSmoke, /peakHandleGrowthPercent -gt 10\.0/);

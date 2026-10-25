@@ -78,15 +78,35 @@ try {
   if ($gatewayInfo.port -lt 1 -or $gatewayInfo.port -gt 65535) { throw 'Local smoke Gateway returned an invalid port.' }
   $env:AURA_AI_GATEWAY_URL = "http://127.0.0.1:$($gatewayInfo.port)"
 
-  $proc = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru -WindowStyle Hidden
-  if ($proc.ExitCode -ne 0) { throw "NSIS installer failed with exit code $($proc.ExitCode)" }
-  $appExe = Join-Path $installDir 'Aura POS.exe'
-  if (!(Test-Path $appExe)) { throw 'Installed application executable missing.' }
+  # NSIS may start the app from its finish action; set smoke variables before installing so that process inherits them.
   $env:AURA_INSTALLED_SMOKE = '1'
   $env:AURA_INSTALLED_SMOKE_REPORT = $report
   $env:AURA_INSTALLED_SMOKE_READY = $readyReport
   $env:AURA_INSTALLED_SMOKE_STOP = $stopSignal
-  $app = Start-Process -FilePath $appExe -PassThru -WindowStyle Hidden
+
+  $proc = Start-Process -FilePath $installer -ArgumentList @('/S', "/D=$installDir") -Wait -PassThru -WindowStyle Hidden
+  if ($proc.ExitCode -ne 0) { throw "NSIS installer failed with exit code $($proc.ExitCode)" }
+  $appExe = Join-Path $installDir 'Aura POS.exe'
+  if (!(Test-Path $appExe)) { throw 'Installed application executable missing.' }
+
+  # Prefer the instrumented app that NSIS may have launched; otherwise start it explicitly.
+  $appLaunchDeadline = (Get-Date).AddSeconds(15)
+  while ((Get-Date) -lt $appLaunchDeadline) {
+    $installedMain = @(Get-CimInstance Win32_Process | Where-Object {
+      $_.ExecutablePath -and $_.ExecutablePath -ieq $appExe -and $_.CommandLine -notmatch '(?:^|\s)--type='
+    } | Select-Object -First 1)
+    if ($installedMain.Count -gt 0) {
+      $app = Get-Process -Id ([int]$installedMain[0].ProcessId) -ErrorAction SilentlyContinue
+      if ($app) { break }
+    }
+    Start-Sleep -Milliseconds 250
+  }
+  if (!$app) {
+    Write-Host 'NSIS did not auto-launch the installed app; starting it with the smoke environment.'
+    $app = Start-Process -FilePath $appExe -PassThru -WindowStyle Hidden
+  } else {
+    Write-Host "Using NSIS-launched installed app (PID $($app.Id)) with inherited smoke environment."
+  }
 
   $readyDeadline = (Get-Date).AddMinutes(4)
   while (!(Test-Path $readyReport) -and (Get-Date) -lt $readyDeadline) {
