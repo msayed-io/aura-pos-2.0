@@ -1,25 +1,37 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  Bot, QrCode, WifiOff, MessageSquare, Zap, Upload, ChevronDown,
+  Bot, QrCode, Wifi, WifiOff, MessageSquare, Zap, Upload, ChevronDown,
   AlertCircle, Phone, Clock, Settings, Search, Sparkles, ArrowRight, Save, Plus,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 
-// Presentation only. Do not read legacy integration settings, load a provider,
-// poll a server, persist configuration or generate connection credentials here.
+type ConnectionState = 'idle' | 'connecting' | 'qr' | 'connected' | 'reconnecting' | 'needs-attention' | 'paused' | 'stopping' | 'stopped';
+
 const inputClass = 'w-full px-4 py-3 border border-gray-200 rounded-lg bg-white text-neo-secondary text-base disabled:cursor-not-allowed disabled:bg-gray-50';
 const buttonClass = 'flex items-center justify-center gap-2 px-4 py-3 bg-neo-primary text-white font-semibold rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]';
 const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const unavailable = 'غير متاح حتى إضافة المحرك المحلي';
+const connectionLabels: Record<ConnectionState, string> = {
+  idle: 'غير متصل — الخدمة جاهزة لبدء الربط',
+  connecting: 'جارٍ الاتصال بخوادم WhatsApp',
+  qr: 'بانتظار مسح رمز QR',
+  connected: 'متصل بـWhatsApp',
+  reconnecting: 'انقطع الاتصال — جارٍ إعادة المحاولة',
+  'needs-attention': 'يحتاج الربط إلى تدخل',
+  paused: 'الاتصال متوقف مؤقتاً',
+  stopping: 'جارٍ إيقاف الاتصال',
+  stopped: 'الخدمة متوقفة',
+};
 
 const ScaffoldNotice = () => (
   <div role="status" className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
     <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
     <div>
-      <p className="text-sm font-semibold text-amber-800">واجهة فقط — المحرك غير مضاف حالياً</p>
+      <p className="text-sm font-semibold text-amber-800">الربط المحلي متاح — مساعد الذكاء الاصطناعي غير مضاف</p>
       <p className="text-xs text-amber-700 mt-1">
-        الواجهة محفوظة لبناء مكتبة واتساب والذكاء الاصطناعي المحلي لاحقاً. الربط والرد التلقائي والتوليد والحفظ ورفع الملفات غير متاحة الآن؛ لا يتم إرسال أو حفظ أي بيانات من هذه الصفحة.
+        تُحفظ جلسة WhatsApp محلياً على هذا الجهاز. لم يُضف المساعد أو الردود النصية بعد؛ إعدادات التوليد والحفظ ورفع الملفات غير متاحة.
       </p>
     </div>
   </div>
@@ -53,12 +65,68 @@ const InactiveToggle = ({ label }: { label: string }) => (
 );
 
 const BotAIPage: React.FC = () => {
-  // Only navigation/expansion state is live. Operational controls stay disabled.
   const [view, setView] = useState<'overview' | 'personality'>('overview');
   const [connectionTab, setConnectionTab] = useState<'qr' | 'pairing'>('qr');
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionState>('idle');
+  const [qrPayload, setQrPayload] = useState<string | null>(null);
+  const [connectionBusy, setConnectionBusy] = useState(false);
+  const [connectionError, setConnectionError] = useState('');
   const [businessHoursExpanded, setBusinessHoursExpanded] = useState(false);
   const [quickRepliesExpanded, setQuickRepliesExpanded] = useState(false);
   const [manualEntryExpanded, setManualEntryExpanded] = useState(false);
+
+  useEffect(() => {
+    const api = window.electronAPI;
+    if (!api) return undefined;
+    let active = true;
+    const unsubscribeStatus = api.onWhatsAppStatus(payload => {
+      if (!active) return;
+      setConnectionStatus(payload.state);
+      if (payload.state !== 'qr') setQrPayload(null);
+    });
+    const unsubscribeQr = api.onWhatsAppQr(payload => { if (active) setQrPayload(payload); });
+    void api.getWhatsAppStatus().then(snapshot => {
+      if (!active) return;
+      setConnectionStatus(snapshot.state);
+      setQrPayload(snapshot.state === 'qr' ? snapshot.qr : null);
+    }).catch(() => { if (active) setConnectionError('تعذر قراءة حالة الاتصال من التطبيق.'); });
+    return () => {
+      active = false;
+      unsubscribeStatus();
+      unsubscribeQr();
+    };
+  }, []);
+
+  const startWhatsApp = async () => {
+    const api = window.electronAPI;
+    if (!api) { setConnectionError('يتطلب ربط WhatsApp تشغيل تطبيق Aura POS لسطح المكتب.'); return; }
+    setConnectionBusy(true);
+    setConnectionError('');
+    try {
+      const accepted = await api.connectWhatsApp();
+      if (!accepted) setConnectionError('الخدمة المحلية غير جاهزة الآن. أعد المحاولة بعد لحظات.');
+    } catch {
+      setConnectionError('تعذر بدء اتصال WhatsApp المحلي.');
+    } finally {
+      setConnectionBusy(false);
+    }
+  };
+
+  const disconnectWhatsApp = async () => {
+    if (!window.confirm('سيتم فصل جهاز WhatsApp ومسح جلسة الربط المحفوظة من هذا الجهاز. هل تريد المتابعة؟')) return;
+    const api = window.electronAPI;
+    if (!api) return;
+    setConnectionBusy(true);
+    setConnectionError('');
+    try {
+      const accepted = await api.disconnectWhatsApp();
+      if (!accepted) setConnectionError('تعذر إرسال طلب الفصل إلى الخدمة المحلية.');
+    } catch {
+      setConnectionError('تعذر فصل WhatsApp.');
+    } finally {
+      setConnectionBusy(false);
+    }
+  };
 
   if (view === 'personality') {
     return (
@@ -163,8 +231,10 @@ const BotAIPage: React.FC = () => {
       </section>
       <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="p-5 border-b border-gray-100 flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-red-50 flex items-center justify-center"><WifiOff className="w-5 h-5 text-red-400" /></div>
-          <div><h2 className="text-base font-bold text-neo-secondary">اتصال واتساب</h2><p className="text-sm font-semibold text-red-500">غير متصل — لا يوجد محرك</p></div>
+          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${connectionStatus === 'connected' ? 'bg-green-50' : 'bg-red-50'}`}>
+            {connectionStatus === 'connected' ? <Wifi className="w-5 h-5 text-green-600" /> : <WifiOff className="w-5 h-5 text-red-400" />}
+          </div>
+          <div><h2 className="text-base font-bold text-neo-secondary">اتصال WhatsApp</h2><p className={`text-sm font-semibold ${connectionStatus === 'connected' ? 'text-green-600' : 'text-red-500'}`} role="status" aria-live="polite">{window.electronAPI ? connectionLabels[connectionStatus] : 'غير متاح في المتصفح — استخدم تطبيق Aura POS لسطح المكتب'}</p></div>
         </div>
         <div className="p-5">
           <div className="flex gap-1 bg-gray-100 p-1 rounded-lg mb-5" role="group" aria-label="طريقة ربط واتساب">
@@ -177,10 +247,33 @@ const BotAIPage: React.FC = () => {
           </div>
           {connectionTab === 'qr' ? (
             <div className="py-8 text-center">
-              <QrCode className="w-14 h-14 mx-auto text-gray-300 mb-4" />
-              <p className="text-neo-secondary/70 mb-1 text-base font-semibold">ربط واتساب عبر رمز QR</p>
-              <p className="text-sm text-neo-secondary/40 mb-5">عرض رمز الربط غير متاح حتى إضافة المكتبة المحلية</p>
-              <button type="button" disabled title={unavailable} className={`${buttonClass} mx-auto`}><QrCode className="w-5 h-5" />عرض رمز QR</button>
+              {connectionStatus === 'qr' && qrPayload ? (
+                <div className="inline-flex flex-col items-center gap-4 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+                  <QRCodeSVG value={qrPayload} size={240} level="M" marginSize={4} title="رمز ربط WhatsApp" />
+                  <p className="max-w-xs text-sm font-semibold text-neo-secondary">افتح WhatsApp على هاتفك وامسح الرمز الآن. يتجدد الرمز تلقائياً عند الحاجة.</p>
+                </div>
+              ) : (
+                <>
+                  <QrCode className="w-14 h-14 mx-auto text-gray-300 mb-4" />
+                  <p className="text-neo-secondary/70 mb-1 text-base font-semibold">ربط WhatsApp عبر رمز QR</p>
+                  <p className="text-sm text-neo-secondary/50 mb-5">{connectionStatus === 'connected' ? 'تم ربط الجهاز؛ لا حاجة لمسح الرمز مرة أخرى.' : connectionStatus === 'connecting' ? 'جارٍ تجهيز اتصال آمن للحصول على رمز QR…' : 'ابدأ الربط لطلب رمز QR من WhatsApp.'}</p>
+                </>
+              )}
+              {connectionError && <p role="alert" className="text-sm text-red-600 mb-4">{connectionError}</p>}
+              <div className="flex flex-wrap justify-center gap-3">
+                <button type="button" onClick={startWhatsApp}
+                  disabled={!window.electronAPI || connectionBusy || ['connecting', 'qr', 'connected', 'reconnecting'].includes(connectionStatus)}
+                  title={!window.electronAPI ? 'يتطلب تطبيق Aura POS لسطح المكتب' : undefined} className={buttonClass}>
+                  <QrCode className="w-5 h-5" />{connectionBusy ? 'جارٍ تنفيذ الطلب…' : connectionStatus === 'needs-attention' || connectionStatus === 'stopped' ? 'إعادة المحاولة' : 'بدء الربط'}
+                </button>
+                {['connected', 'qr', 'connecting', 'reconnecting', 'needs-attention'].includes(connectionStatus) && (
+                  <button type="button" onClick={() => { void disconnectWhatsApp(); }} disabled={connectionBusy}
+                    className="flex items-center justify-center gap-2 px-4 py-3 border border-red-200 text-red-600 font-semibold rounded-lg text-sm disabled:opacity-50 min-h-[44px]">
+                    فصل الربط
+                  </button>
+                )}
+              </div>
+              <p className="mt-4 text-xs text-neo-secondary/50">جلسة الربط محفوظة محلياً. فصل الربط يمسحها ويتطلب مسح QR جديداً.</p>
             </div>
           ) : (
             <InactiveControls>

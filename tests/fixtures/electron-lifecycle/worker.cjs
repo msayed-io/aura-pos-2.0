@@ -26,6 +26,11 @@ if (generation === 2) setTimeout(() => {
   parentPort.postMessage({ protocol: 1, service: 'whatsapp', token: 'forged-token', sequence: ++sequence, type: 'heartbeat', state });
 }, 80);
 if (generation === 3) setTimeout(() => {
+  state = 'qr';
+  send('status');
+  parentPort.postMessage({ protocol: 1, service: 'whatsapp', token, sequence: ++sequence, type: 'qr', state, qr: 'TEST-QR-PAYLOAD' });
+  parentPort.postMessage({ protocol: 1, service: 'whatsapp', token, sequence: ++sequence, type: 'error', state, errorCode: 'SOCKET_START_FAILED' });
   state = 'connected';
+  send('status');
   parentPort.postMessage({ protocol: 1, service: 'whatsapp', token, sequence: ++sequence, type: 'new-order', state, displayId: 'TEST-001' });
 }, 20);

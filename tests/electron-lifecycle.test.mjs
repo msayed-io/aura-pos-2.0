@@ -38,15 +38,19 @@ test('real Electron utility service rejects forged IPC, recovers from crashes, a
   assert.equal(report.productionService, false);
   assert.deepEqual(report.readyGenerations, [1, 2, 3]);
   assert.deepEqual(report.newOrders, ['TEST-001']);
+  assert.deepEqual(report.qrPayloads, ['TEST-QR-PAYLOAD']);
+  assert.deepEqual(report.errorCodes, ['SOCKET_START_FAILED']);
   assert.equal(report.rejectedMessages, 1);
   assert.ok(report.restartScheduled >= 2);
 });
 
-test('production WhatsApp service skeleton starts and stops as a real utility process under its measured memory cap', { timeout: 30000 }, () => {
+test('pinned Baileys WhatsApp service starts and stops as a real utility process under its measured memory cap', { timeout: 30000 }, () => {
   const report = runElectron({ AURA_TEST_REAL_SERVICE: '1' });
   assert.equal(report.productionService, true);
   assert.deepEqual(report.readyGenerations, [1]);
   assert.deepEqual(report.newOrders, []);
+  assert.deepEqual(report.qrPayloads, []);
+  assert.deepEqual(report.errorCodes, []);
   assert.equal(report.restartScheduled, 0);
   assert.ok(report.memoryBytes < 256 * MIB, `Measured worker memory ${report.memoryBytes} exceeds the documented 256 MiB limit`);
 });

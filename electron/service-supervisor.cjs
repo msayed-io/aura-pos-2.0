@@ -3,11 +3,13 @@
 
 const { EventEmitter } = require('node:events');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
+const path = require('node:path');
 
 const VALID_STATES = new Set(['idle', 'paused', 'stopping', 'stopped', 'connecting', 'qr', 'connected', 'reconnecting', 'needs-attention']);
-const COMMANDS = new Set(['stop', 'suspend', 'resume']);
-const MESSAGE_TYPES = new Set(['ready', 'heartbeat', 'status', 'stopped', 'new-order']);
+const COMMANDS = new Set(['start', 'disconnect', 'stop', 'suspend', 'resume']);
+const MESSAGE_TYPES = new Set(['ready', 'heartbeat', 'status', 'stopped', 'new-order', 'qr', 'error']);
 const BASE_MESSAGE_KEYS = ['protocol', 'service', 'token', 'sequence', 'type', 'state'];
+const SAFE_ERROR_CODES = new Set(['AUTH_STATE_FAILED', 'SOCKET_START_FAILED', 'CREDS_PERSIST_FAILED', 'SESSION_CLEAR_FAILED', 'SESSION_QUARANTINE_FAILED', 'CONNECTION_EVENT_FAILED', 'OUTBOUND_SEND_FAILED', 'PRESENCE_RESET_FAILED', 'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED']);
 const INHERITED_ENV = ['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR'];
 
 function tokenMatches(expected, supplied) {
@@ -25,6 +27,10 @@ function workerEnvironment(generation, token, extra = {}) {
   env.AURA_SERVICE_GENERATION = String(generation);
   for (const [key, value] of Object.entries(extra)) {
     if (/^AURA_TEST_[A-Z0-9_]+$/.test(key) && typeof value === 'string') env[key] = value;
+    if (key === 'AURA_WHATSAPP_SESSION_DIR' && typeof value === 'string' && value.length <= 32768
+      && !/[\r\n\0]/.test(value) && path.isAbsolute(value)) env[key] = value;
+    if (key === 'AURA_WHATSAPP_RUNTIME_PACKAGE' && typeof value === 'string' && value.length <= 32768
+      && !/[\r\n\0]/.test(value) && path.isAbsolute(value)) env[key] = value;
   }
   return env;
 }
@@ -167,14 +173,18 @@ class UtilityServiceSupervisor extends EventEmitter {
 
   handleMessage(child, generation, message) {
     if (child !== this.child || generation !== this.generation || this.stopping) return;
-    const allowedKeys = message?.type === 'new-order' ? [...BASE_MESSAGE_KEYS, 'displayId'] : BASE_MESSAGE_KEYS;
+    const allowedKeys = message?.type === 'new-order' ? [...BASE_MESSAGE_KEYS, 'displayId']
+      : message?.type === 'qr' ? [...BASE_MESSAGE_KEYS, 'qr']
+        : message?.type === 'error' ? [...BASE_MESSAGE_KEYS, 'errorCode'] : BASE_MESSAGE_KEYS;
     const validEnvelope = message && typeof message === 'object' && !Array.isArray(message)
       && message.protocol === 1 && message.service === 'whatsapp'
       && tokenMatches(this.token, message.token)
       && Number.isSafeInteger(message.sequence) && message.sequence > this.inSequence
       && MESSAGE_TYPES.has(message.type) && VALID_STATES.has(message.state)
       && Object.keys(message).length === allowedKeys.length && Object.keys(message).every(key => allowedKeys.includes(key))
-      && (message.type !== 'new-order' || (message.state === 'connected' && typeof message.displayId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(message.displayId)));
+      && (message.type !== 'new-order' || (message.state === 'connected' && typeof message.displayId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(message.displayId)))
+      && (message.type !== 'qr' || (message.state === 'qr' && typeof message.qr === 'string' && message.qr.length > 0 && message.qr.length <= 4096))
+      && (message.type !== 'error' || (typeof message.errorCode === 'string' && SAFE_ERROR_CODES.has(message.errorCode)));
     if (!validEnvelope) {
       this.invalidMessages += 1;
       this.log('SERVICE_MESSAGE_REJECTED', { generation, count: this.invalidMessages });
@@ -192,7 +202,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       return;
     }
     if (message.type === 'ready' && this.readyAt) return;
-    if (message.type !== 'ready' && message.type !== 'heartbeat' && message.type !== 'status' && message.type !== 'stopped' && message.type !== 'new-order') return;
+    if (message.type !== 'ready' && message.type !== 'heartbeat' && message.type !== 'status' && message.type !== 'stopped' && message.type !== 'new-order' && message.type !== 'qr' && message.type !== 'error') return;
     this.inSequence = message.sequence;
     this.lastHeartbeatAt = Date.now();
     if (message.type === 'ready') {
@@ -205,6 +215,10 @@ class UtilityServiceSupervisor extends EventEmitter {
       this.setState('stopped');
     } else if (message.type === 'new-order') {
       this.emit('new-order', { displayId: message.displayId, generation });
+    } else if (message.type === 'qr') {
+      this.emit('qr', message.qr, generation);
+    } else if (message.type === 'error') {
+      this.emit('error-code', message.errorCode, generation);
     }
   }
 

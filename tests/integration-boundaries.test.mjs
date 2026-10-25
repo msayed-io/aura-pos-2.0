@@ -30,11 +30,15 @@ test('only local base, health and the same-origin storage API routes are exposed
   ]);
 });
 
-test('Electron preload keeps explicit channels only and adds a display-ID-only new-order notice', () => {
+test('Electron preload keeps explicit printer, order and WhatsApp channels only', () => {
   const preload = read('electron/preload.cjs');
   const exposed = [...preload.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9]*):\s*\(/gm)].map(match => match[1]);
-  assert.deepEqual(exposed, ['getPrinters', 'print', 'savePrinterSettings', 'loadPrinterSettings', 'showNotification', 'notifyNewOrder']);
+  assert.deepEqual(exposed, ['getPrinters', 'print', 'savePrinterSettings', 'loadPrinterSettings', 'showNotification', 'notifyNewOrder', 'getWhatsAppStatus', 'connectWhatsApp', 'disconnectWhatsApp', 'onWhatsAppStatus', 'onWhatsAppQr']);
   assert.match(preload, /notifyNewOrder:\s*\(displayId\)\s*=>\s*ipcRenderer\.invoke\('orders:new-notification',\s*displayId\)/);
+  assert.match(preload, /getWhatsAppStatus:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:status:get'\)/);
+  assert.match(preload, /connectWhatsApp:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:connect'\)/);
+  assert.match(preload, /disconnectWhatsApp:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:disconnect'\)/);
+  assert.match(preload, /ipcRenderer\.on\('whatsapp:qr'/);
   assert.doesNotMatch(preload, /contextBridge\.exposeInMainWorld\('electronAPI',\s*\{[^}]*ipcRenderer[),]/s);
 });
 
@@ -88,6 +92,28 @@ test('local environment template contains only the optional database setting', (
   assert.deepEqual(keys, ['DATABASE_URL']);
 });
 
+test('packaged app copies the isolated WhatsApp runtime to resources and the worker resolves that path', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.deepEqual(pkg.build.extraResources, [
+    { from: 'electron/whatsapp-runtime/package.json', to: 'whatsapp-runtime/package.json' },
+    {
+      from: 'electron/whatsapp-runtime/node_modules',
+      to: 'whatsapp-runtime/node_modules',
+      filter: ['**/*'],
+    },
+  ]);
+  assert.doesNotMatch(pkg.build.asarUnpack.join('\n'), /whatsapp-runtime/);
+  assert.match(read('electron/main.cjs'), /process\.resourcesPath, 'whatsapp-runtime', 'package\.json'/);
+  assert.match(read('electron/service-supervisor.cjs'), /AURA_WHATSAPP_RUNTIME_PACKAGE/);
+  assert.match(read('electron/whatsapp-service.cjs'), /createRequire\(runtimePackagePath\)/);
+});
+
+test('WhatsApp worker defers commands until local auth initialization settles', () => {
+  const worker = read('electron/whatsapp-service.cjs');
+  assert.match(worker, /createSerialCommandQueue\(async command => \{\s*await initializationPromise;\s*return runCommand\(command\);\s*\}\)/);
+  assert.match(worker, /initializationPromise = session\.initialize\(\);\s*await initializationPromise;/);
+});
+
 test('Bot UI is wired to settings and caller types without restoring removed engines', () => {
   const settings = read('src/aura/pages/SettingsPage.tsx');
   assert.match(settings, /import BotAIPage from ['"]\.\.\/components\/dashboard\/pages\/settings\/BotAIPage['"]/);
@@ -111,7 +137,10 @@ test('Bot UI is wired to settings and caller types without restoring removed eng
   }
   const pkg = JSON.parse(read('package.json'));
   const dependencies = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies };
-  for (const name of Object.keys(dependencies)) {
-    assert.doesNotMatch(name, /wakz|gemini|generative-ai|baileys|whatsapp-web|z-ai-web-dev-sdk|qrcode/i, `Unexpected engine dependency: ${name}`);
-  }
+  for (const name of Object.keys(dependencies)) assert.doesNotMatch(name, /wakz|gemini|generative-ai|baileys|whatsapp-web|z-ai-web-dev-sdk/i, `Unexpected provider/runtime dependency in root: ${name}`);
+  assert.equal(pkg.dependencies['qrcode.react'], '4.2.0');
+  const runtime = JSON.parse(read('electron/whatsapp-runtime/package.json'));
+  const runtimeLock = JSON.parse(read('electron/whatsapp-runtime/package-lock.json'));
+  assert.equal(runtime.dependencies['@whiskeysockets/baileys'], '6.7.24');
+  assert.equal(runtimeLock.packages['node_modules/@whiskeysockets/baileys'].version, '6.7.24');
 });

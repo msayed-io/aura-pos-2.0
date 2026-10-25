@@ -25,6 +25,7 @@ let serverShutdownToken;
 let tray;
 let serviceSupervisor;
 let serviceState = 'idle';
+let whatsappQr = null;
 let closeNoticeShown = false;
 let ipcRegistered = false;
 let appIsQuitting = false;
@@ -45,12 +46,26 @@ const serverRoot = isDev
 const serverEntry = path.join(serverRoot, 'server.js');
 const dataDir = app.getPath('userData');
 const settingsPath = path.join(dataDir, 'printer-settings.json');
+const whatsappSessionDir = path.join(dataDir, 'whatsapp-session');
+const whatsappRuntimePackagePath = app.isPackaged
+  ? path.join(process.resourcesPath, 'whatsapp-runtime', 'package.json')
+  : path.join(__dirname, 'whatsapp-runtime', 'package.json');
 const serviceEntry = path.join(__dirname, 'whatsapp-service.cjs');
 const trayIconPath = path.join(__dirname, 'aura-icon.ico');
 
 function report(code, error) {
   const errorCode = error && typeof error === 'object' ? error.code || error.name : undefined;
   console.error(JSON.stringify({ component: 'electron-main', code, ...(errorCode ? { errorCode: String(errorCode).slice(0, 48) } : {}) }));
+}
+
+function publishWhatsAppStatus(snapshot) {
+  serviceState = snapshot.state;
+  if (serviceState !== 'qr' && whatsappQr !== null) {
+    whatsappQr = null;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:qr', null);
+  }
+  updateTrayMenu();
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:status', { state: serviceState });
 }
 
 function readSettings() {
@@ -284,6 +299,21 @@ function registerIpc() {
     if (typeof displayId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(displayId)) throw new Error('INVALID_ORDER_DISPLAY_ID');
     return showNewOrderNotification(displayId);
   });
+  ipcMain.handle('whatsapp:status:get', (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 0) throw new Error('INVALID_WHATSAPP_STATUS_REQUEST');
+    return { state: serviceState, qr: serviceState === 'qr' ? whatsappQr : null };
+  });
+  ipcMain.handle('whatsapp:connect', (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 0) throw new Error('INVALID_WHATSAPP_CONNECT_REQUEST');
+    return Boolean(serviceSupervisor?.command('start'));
+  });
+  ipcMain.handle('whatsapp:disconnect', (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 0) throw new Error('INVALID_WHATSAPP_DISCONNECT_REQUEST');
+    return Boolean(serviceSupervisor?.command('disconnect'));
+  });
 }
 
 function showMainWindow() {
@@ -403,8 +433,19 @@ if (hasSingleInstanceLock) {
   app.whenReady().then(async () => {
     app.setAppUserModelId('com.aura.pos');
     createTray();
-    serviceSupervisor = new UtilityServiceSupervisor({ utilityProcess, app, entry: serviceEntry, serviceName: 'Aura WhatsApp Service' });
-    serviceSupervisor.on('status', snapshot => { serviceState = snapshot.state; updateTrayMenu(); });
+    serviceSupervisor = new UtilityServiceSupervisor({
+      utilityProcess, app, entry: serviceEntry, serviceName: 'Aura WhatsApp Service',
+      childEnv: {
+        AURA_WHATSAPP_SESSION_DIR: whatsappSessionDir,
+        AURA_WHATSAPP_RUNTIME_PACKAGE: whatsappRuntimePackagePath,
+      },
+    });
+    serviceSupervisor.on('status', publishWhatsAppStatus);
+    serviceSupervisor.on('qr', qr => {
+      whatsappQr = typeof qr === 'string' && qr.length <= 4096 ? qr : null;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:qr', whatsappQr);
+    });
+    serviceSupervisor.on('error-code', errorCode => report('WHATSAPP_SERVICE_REPORTED_ERROR', { code: errorCode }));
     serviceSupervisor.on('memory-limit', () => { serviceState = 'reconnecting'; updateTrayMenu(); });
     serviceSupervisor.on('new-order', ({ displayId }) => { showNewOrderNotification(displayId); });
     serviceSupervisor.start();
