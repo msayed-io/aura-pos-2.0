@@ -176,6 +176,99 @@ test('local Gateway + real SQLite agent flow redacts phone, holds drafts, and cr
   assert.equal((await store.dispatch('whatsapp.agent.snapshot', { accountId: 'primary', conversationHash: 'b'.repeat(64) })).conversation.state, 'needs_staff');
 });
 
+test('stale confirmation racing with an item edit returns a fresh summary and creates no order', async t => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'test';
+  const gateway = createGateway({ provider: async () => ({
+    reply: 'راجع الطلب قبل التأكيد.',
+    intent: 'request_confirmation',
+    items: [{ itemId: 'race-item', quantity: 1, notes: '' }],
+    orderDetails: { deliveryMethod: 'pickup', paymentMethod: 'cash' },
+  }) });
+  gateway.listen(0, '127.0.0.1');
+  await once(gateway, 'listening');
+  const gatewayAddress = gateway.address();
+  assert.ok(gatewayAddress && typeof gatewayAddress === 'object');
+
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wa-agent-stale-confirm-'));
+  const store = createLocalStore({ dataDir, seed: false, autoBackup: false });
+  await store.initialize();
+  t.after(async () => {
+    await store.checkpointAndClose();
+    await new Promise(resolve => { gateway.close(resolve); gateway.closeAllConnections?.(); });
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
+  });
+
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('inventory.saveStock', { stock: { id: 'race-item', name: 'صنف اختبار', quantity: 10 } });
+  await store.dispatch('menu.saveItem', { itemData: { id: 'race-item', name: 'صنف اختبار', price: 50, isActive: true } });
+  const gatewayRequest = createGatewayClient({
+    gatewayUrl: `http://127.0.0.1:${gatewayAddress.port}`,
+    installToken,
+    timeoutMs: 3000,
+  });
+  const common = {
+    accountId: 'primary',
+    conversationHash: 'e'.repeat(64),
+    encryptedReplyTarget: 'opaque-encrypted-jid-reference',
+    customerPhone: '201234567890',
+  };
+  const first = await processWhatsAppMessage(store, {
+    ...common, messageId: 'stale-summary-seed', text: 'أريد صنف اختبار',
+  }, { gatewayRequest });
+  assert.match(first.reply.replyText, /٥٠/);
+  const original = await store.dispatch('whatsapp.agent.snapshot', { accountId: common.accountId, conversationHash: common.conversationHash });
+  assert.equal(original.draft.status, 'awaiting_confirmation');
+  const oldVersion = original.draft.version;
+
+  let editInjected = false;
+  const racingStore = {
+    dispatch: async (action, payload) => {
+      if (action === 'whatsapp.agent.snapshot' && !editInjected) {
+        const beforeEdit = await store.dispatch(action, payload);
+        const edited = await store.dispatch('whatsapp.draft.update', {
+          accountId: common.accountId,
+          conversationHash: common.conversationHash,
+          draftId: beforeEdit.draft.id,
+          items: [{ itemId: 'race-item', quantity: 2, notes: '' }],
+          orderDetails: beforeEdit.draft.data.orderDetails,
+          customerPhone: common.customerPhone,
+        });
+        assert.equal(edited.draft.version, oldVersion + 1);
+        editInjected = true;
+        return beforeEdit;
+      }
+      return store.dispatch(action, payload);
+    },
+  };
+  const stale = await processWhatsAppMessage(racingStore, {
+    ...common, messageId: 'stale-confirmation', text: 'تأكيد',
+  }, { gatewayRequest });
+  assert.equal(editInjected, true);
+  assert.equal(stale.staleSummary, true);
+  assert.equal(stale.order, null);
+  assert.match(stale.reply.replyText, /لم أُنشئه/);
+  assert.match(stale.reply.replyText, /ملخص طلبك/);
+  assert.match(stale.reply.replyText, /١٠٠/);
+  assert.equal(await store.prisma.localOrder.count(), 0);
+  assert.equal(await store.prisma.localPrintJob.count(), 0);
+  assert.equal((await store.dispatch('inventory.get')).stockList.find(item => item.id === 'race-item').quantity, 10);
+
+  const updated = await store.dispatch('whatsapp.agent.snapshot', { accountId: common.accountId, conversationHash: common.conversationHash });
+  assert.equal(updated.draft.version, oldVersion + 1);
+  assert.equal(updated.draft.status, 'awaiting_confirmation');
+  assert.equal(updated.draft.summaryVersion, updated.draft.version);
+  const confirmed = await processWhatsAppMessage(store, {
+    ...common, messageId: 'fresh-confirmation', text: 'تأكيد',
+  }, { gatewayRequest });
+  assert.equal(confirmed.order.summary.total, 100);
+  assert.equal(await store.prisma.localOrder.count({ where: { source: 'WHATSAPP' } }), 1);
+  assert.equal(await store.prisma.localPrintJob.count({ where: { orderId: confirmed.order.id } }), 2);
+  assert.equal((await store.dispatch('inventory.get')).stockList.find(item => item.id === 'race-item').quantity, 8);
+});
+
 test('two distinct customer confirmation message IDs create one order and one print pair', async t => {
   const previousNodeEnv = process.env.NODE_ENV;
   process.env.NODE_ENV = 'test';

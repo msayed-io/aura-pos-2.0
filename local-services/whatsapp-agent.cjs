@@ -346,15 +346,40 @@ async function processWhatsAppMessage(store, input, { gatewayRequest, resumeExis
       const reply = await prepareReply(store, input, 'لم أجد ملخصاً حالياً صالحاً للتأكيد. أرسل طلبك أو اطلب ملخصاً جديداً أولاً.');
       return { reply: reply || null };
     }
-    const confirmed = await store.dispatch('whatsapp.draft.confirm', {
-      accountId: input.accountId,
-      conversationHash: input.conversationHash,
-      draftId: draft.id,
-      expectedVersion: draft.version,
-      customerPhone: input.customerPhone,
-      confirmationMessageId: input.messageId,
-      confirmationEncryptedReplyTarget: input.encryptedReplyTarget,
-    });
+    let confirmed;
+    try {
+      confirmed = await store.dispatch('whatsapp.draft.confirm', {
+        accountId: input.accountId,
+        conversationHash: input.conversationHash,
+        draftId: draft.id,
+        expectedVersion: draft.version,
+        customerPhone: input.customerPhone,
+        confirmationMessageId: input.messageId,
+        confirmationEncryptedReplyTarget: input.encryptedReplyTarget,
+      });
+    } catch (error) {
+      if (error?.code !== 'STALE_SUMMARY') throw error;
+      const latestSnapshot = await store.dispatch('whatsapp.agent.snapshot', {
+        accountId: input.accountId,
+        conversationHash: input.conversationHash,
+      });
+      let latestDraft = latestSnapshot?.draft || null;
+      const latestData = parseDraftData(latestDraft) || {};
+      if (latestDraft?.status === 'collecting' && Array.isArray(latestData.items) && latestData.items.length > 0) {
+        const refreshed = await store.dispatch('whatsapp.draft.awaiting', {
+          draftId: latestDraft.id,
+          expectedVersion: latestDraft.version,
+        });
+        if (!refreshed?.conflict) latestDraft = refreshed.draft;
+      }
+      const currentSummary = latestDraft?.status === 'awaiting_confirmation'
+        && latestDraft.summaryVersion === latestDraft.version ? buildLocalSummary(latestDraft) : null;
+      const staleReplyText = currentSummary
+        ? `تغيّر الطلب أثناء التأكيد؛ لم أُنشئه. راجع هذا الملخص المحدّث ثم أرسل «تأكيد» من جديد.\n${currentSummary}`
+        : 'تغيّر الطلب أثناء التأكيد؛ لم أُنشئه. أرسل طلبك مجدداً لأعدّ ملخصاً جديداً، ثم أرسل «تأكيد».';
+      const reply = await prepareReply(store, input, staleReplyText);
+      return { staleSummary: true, order: null, reply: reply || null };
+    }
     return { order: confirmed?.order || null, printJobs: confirmed?.printJobs || [], replay: Boolean(confirmed?.replay), awaitingPrint: true };
   }
 
