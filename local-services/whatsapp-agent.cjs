@@ -207,17 +207,38 @@ function buildLocalSystemPrompt(personality = DEFAULT_AGENT_PERSONALITY) {
 
 const LOCAL_GEMINI_SYSTEM_PROMPT = 'أنت مساعد طلبات لمتجر. أجب باللغة المناسبة لرسائل العميل، باختصار وتهذيب. استخدم المنيو والسياق المعطى فقط ولا تخترع أصنافاً. قد يحتوي المنيو على أسعار محلية للاستدلال على الأصناف المناسبة، لكن لا تذكر أي سعر أو مبلغ في reply ولا تنشئ إجمالياً؛ التطبيق يحسب الأسعار والإجمالي محلياً ويتجاهل أي سعر صادر عنك. لا تطلب أو تكشف أرقام هواتف أو معرفات شخصية. عند update_draft أو request_confirmation يجب أن تكون items هي القائمة الكاملة النهائية للمسودة؛ لا تحذف صنفاً إلا إذا طلب العميل ذلك بوضوح. استعمل orderDetails فقط للمعلومات التي ذكرها العميل. لا تنشئ طلبات ولا تدّعِ إتمامها. التطبيق يتحقق مستقلاً من رسالة تأكيد صريحة بعد أحدث ملخص. أعد JSON فقط وفق المخطط المحدد.';
 
+function classifyLocalGeminiNetworkError(error, signal) {
+  if (signal?.aborted || error?.name === 'TimeoutError' || error?.name === 'AbortError') return 'LOCAL_GEMINI_TIMEOUT';
+  const chain = [];
+  for (let current = error, depth = 0; current && typeof current === 'object' && depth < 5; current = current.cause, depth += 1) {
+    chain.push(current);
+  }
+  const codes = new Set(chain.map(item => typeof item.code === 'string' ? item.code.toUpperCase() : ''));
+  if (['ENOTFOUND', 'EAI_AGAIN', 'ENODATA'].some(code => codes.has(code))) return 'LOCAL_GEMINI_DNS_FAILED';
+  if (['ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'].some(code => codes.has(code))) {
+    return 'LOCAL_GEMINI_TLS_FAILED';
+  }
+  if (['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'].some(code => codes.has(code))) {
+    return 'LOCAL_GEMINI_TIMEOUT';
+  }
+  if (['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_SOCKET'].some(code => codes.has(code))) {
+    return 'LOCAL_GEMINI_NETWORK_BLOCKED';
+  }
+  return 'LOCAL_GEMINI_UNAVAILABLE';
+}
+
 async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKey = localGeminiApiKey, timeoutMs = 15000 } = {}) {
   if (!validGeminiApiKey(apiKey) || typeof fetchImpl !== 'function') {
     throw new WhatsAppAgentError('LOCAL_GEMINI_NOT_CONFIGURED');
   }
   const url = `${GEMINI_API_BASE_URL}/v1beta/models/${GEMINI_API_MODEL}:generateContent`;
   let response;
+  const signal = AbortSignal.timeout(timeoutMs);
   try {
     response = await fetchImpl(url, {
       method: 'POST',
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
       headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: buildLocalSystemPrompt(payload?.personality) }] },
@@ -240,8 +261,8 @@ async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKe
         },
       }),
     });
-  } catch {
-    throw new WhatsAppAgentError('LOCAL_GEMINI_UNAVAILABLE');
+  } catch (error) {
+    throw new WhatsAppAgentError(classifyLocalGeminiNetworkError(error, signal));
   }
   if (!response.ok) {
     let code = response.status === 429 ? 'LOCAL_GEMINI_RATE_LIMITED'

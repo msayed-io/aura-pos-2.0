@@ -93,3 +93,19 @@ test('Gemini test classifies invalid key, permission, quota, unavailable model a
   assert.doesNotMatch(JSON.stringify(unavailable), new RegExp(TEST_KEY));
   assert.equal((await agent.testLocalGemini(undefined)).errorCode, 'LOCAL_GEMINI_NOT_CONFIGURED');
 });
+
+test('Gemini connection diagnostics distinguish DNS, TLS, timeout and blocked network failures without leaking error text', async () => {
+  const timeout = new Error('synthetic private timeout detail');
+  timeout.name = 'TimeoutError';
+  const failures = [
+    [Object.assign(new Error('synthetic detail'), { code: 'ENOTFOUND' }), 'LOCAL_GEMINI_DNS_FAILED'],
+    [Object.assign(new Error('synthetic detail'), { cause: Object.assign(new Error('nested'), { code: 'CERT_HAS_EXPIRED' }) }), 'LOCAL_GEMINI_TLS_FAILED'],
+    [timeout, 'LOCAL_GEMINI_TIMEOUT'],
+    [Object.assign(new Error('synthetic detail'), { cause: Object.assign(new Error('nested'), { code: 'ECONNRESET' }) }), 'LOCAL_GEMINI_NETWORK_BLOCKED'],
+  ];
+  for (const [failure, expectedCode] of failures) {
+    const result = await agent.testLocalGemini(TEST_KEY, { fetchImpl: async () => { throw failure; } });
+    assert.deepEqual(result, { ok: false, model: 'gemini-3.8-flash', errorCode: expectedCode });
+    assert.doesNotMatch(JSON.stringify(result), /synthetic private|synthetic detail|nested|AIza/);
+  }
+});

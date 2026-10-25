@@ -61,7 +61,11 @@ function geminiTestFailureMessage(errorCode?: string): string {
     case 'LOCAL_GEMINI_REQUEST_REJECTED': return 'رفضت Google صيغة طلب الاختبار؛ لم نتمكن من تقييم صلاحية المفتاح من هذه النتيجة.';
     case 'LOCAL_GEMINI_INVALID_RESPONSE': return 'وصل رد من Google لكن صيغته لم تطابق المتوقع؛ تحقق من تحديث التطبيق.';
     case 'LOCAL_GEMINI_SERVICE_UNAVAILABLE':
-    case 'LOCAL_GEMINI_UNAVAILABLE': return 'تعذر الاتصال بخدمة Gemini. تحقق من الإنترنت أو أعد المحاولة لاحقاً.';
+    case 'LOCAL_GEMINI_UNAVAILABLE': return 'فشل الاتصال قبل وصول رد من Google؛ لا يمكن من هذه النتيجة الحكم على صلاحية المفتاح. افحص الشبكة أو أعد المحاولة.';
+    case 'LOCAL_GEMINI_TIMEOUT': return 'انتهت مهلة الاتصال قبل وصول رد من Google؛ لم يتم التحقق من المفتاح. افحص مهلة الشبكة أو VPN/Proxy أو جدار الحماية.';
+    case 'LOCAL_GEMINI_DNS_FAILED': return 'تعذر العثور على عنوان خدمة Google عبر DNS؛ هذا فشل في الوصول للشبكة وليس رفضاً للمفتاح.';
+    case 'LOCAL_GEMINI_TLS_FAILED': return 'تعذر إنشاء اتصال HTTPS آمن مع Google؛ افحص تاريخ Windows أو فحص HTTPS في برنامج الحماية/Proxy.';
+    case 'LOCAL_GEMINI_NETWORK_BLOCKED': return 'تم رفض الاتصال أو قطعه قبل رد Google؛ افحص جدار الحماية أو Proxy/VPN أو الشبكة.';
     case 'LOCAL_GEMINI_NOT_CONFIGURED': return 'اكتب مفتاحاً في الحقل أو احفظ مفتاحاً أولاً لإجراء الاختبار.';
     default: return 'فشل الاختبار دون كشف المفتاح. تحقق من الإنترنت وصلاحية Gemini API أو الحصة ثم أعد المحاولة.';
   }
@@ -352,6 +356,7 @@ const BotAIPage: React.FC = () => {
       setGeminiTestErrorCode(errorMessage.includes('INVALID_GEMINI_API_KEY')
         ? 'INVALID_GEMINI_API_KEY' : 'LOCAL_GEMINI_UNAVAILABLE');
     } finally {
+      try { await refreshAgentSettings(); } catch { /* The provider result remains visible if the local status refresh fails. */ }
       setGeminiBusy(false);
     }
   };
@@ -378,8 +383,13 @@ const BotAIPage: React.FC = () => {
       });
       setAgentSettings(current => ({ ...current, ...updated }));
       if (enabled) setConsentAcknowledged(true);
-    } catch {
-      setAgentError(enabled ? 'تعذر تفعيل الوكيل. لم يتم إرسال رد أو إنشاء طلب.' : 'تعذر إيقاف الوكيل المحلي.');
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error ? String(error.code) : '';
+      setAgentError(enabled && code === 'GATEWAY_NOT_CONFIGURED'
+        ? 'الخدمة المحلية لا ترى مفتاح Gemini بعد. احفظ المفتاح مجدداً وتأكد من اكتمال المزامنة.'
+        : enabled && code === 'AGENT_ENABLED'
+          ? 'الوكيل مفعّل بالفعل؛ حدّث حالة الصفحة قبل تغيير الإعدادات.'
+          : enabled ? 'تعذر تفعيل الوكيل. راجع حالة الإعداد والموافقة؛ لم يتم إرسال رد أو إنشاء طلب.' : 'تعذر إيقاف الوكيل المحلي.');
     } finally {
       setAgentBusy(false);
     }
@@ -634,7 +644,9 @@ const BotAIPage: React.FC = () => {
               <span>أوافق على إرسال المحتوى الضروري إلى Google Gemini أو Gateway المهيأة لمعالجة الطلبات، بعد الاطلاع على التنبيه أعلاه.</span>
             </label>
             <p className="text-xs text-neo-secondary/60" role="status">
-              حالة إعداد الذكاء الاصطناعي: {agentSettings.gatewayConfigured ? 'الإعداد موجود' : 'غير مهيأ — لن يُفعّل الوكيل'}
+              حالة إعداد الذكاء الاصطناعي: {agentSettings.gatewayConfigured
+                ? consentAcknowledged ? 'الإعداد موجود؛ يمكنك تفعيل الوكيل بعد موافقتك.' : 'الإعداد موجود؛ اقرأ التنبيه وحدد مربع الموافقة أولاً، ثم اضغط تفعيل الوكيل.'
+                : 'غير مهيأ — لن يُفعّل الوكيل. احفظ المفتاح وتأكد من اكتمال مزامنته مع الخدمة المحلية.'}
             </p>
             {agentError && <p role="alert" className="text-sm text-red-600">{agentError}</p>}
           </div>

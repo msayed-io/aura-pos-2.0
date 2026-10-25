@@ -45,7 +45,10 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
   const localStoreClient = {
     call: async (action, payload = {}) => {
       storeCalls.push({ action, payload });
-      if (Object.hasOwn(storeOverrides, action)) return storeOverrides[action];
+      if (Object.hasOwn(storeOverrides, action)) {
+        const override = storeOverrides[action];
+        return typeof override === 'function' ? override(payload) : override;
+      }
       if (action === 'whatsapp.agent.settings.get') return defaultSettings;
       if (action === 'whatsapp.agent.settings.set') return { ...(storeOverrides['whatsapp.agent.settings.get'] || defaultSettings), enabled: payload.enabled === true, consentVersion: payload.enabled ? '2' : null, consentAcceptedAt: payload.enabled ? Date.now() : null };
       if (action === 'whatsapp.conversation.list') return [];
@@ -144,6 +147,39 @@ test('AI agent requires explicit consent and configured Gateway before enabling'
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(declined.confirmCalls.length, 1);
   assert.equal(declined.storeCalls.some(call => call.action === 'whatsapp.agent.settings.set'), false);
+});
+
+test('failed provider test refreshes local key sync state and explains the remaining consent step', async () => {
+  let settingsReads = 0;
+  const settings = () => ({
+    enabled: false, consentVersion: null, consentAcceptedAt: null,
+    gatewayConfigured: ++settingsReads > 1,
+  });
+  const api = {
+    onWhatsAppStatus: () => () => {}, onWhatsAppQr: () => () => {}, onWhatsAppPairingCode: () => () => {},
+    getWhatsAppStatus: async () => ({ state: 'idle', qr: null, pairingCode: null }),
+    getGeminiKeyStatus: async () => ({ configured: true, encryptionAvailable: true }),
+    testGeminiApiKey: async () => ({ ok: false, model: 'gemini-3.8-flash', errorCode: 'LOCAL_GEMINI_TIMEOUT' }),
+  };
+  const h = createHarness(api, {
+    'whatsapp.agent.settings.get': settings,
+    'whatsapp.conversation.list': [],
+    'whatsapp.agent.personality.get': { botName: 'مساعد Aura POS', businessName: '', tone: 'friendly', replyLength: 'short', instructions: '', useEmoji: false },
+  });
+  h.render();
+  await new Promise(resolve => setImmediate(resolve));
+  let tree = h.render();
+  assert.equal(button(tree, 'تفعيل الوكيل').props.disabled, true);
+  await button(tree, 'اختبار الاتصال (طلب تجريبي)').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  assert.match(textOf(tree), /انتهت مهلة الاتصال قبل وصول رد من Google/);
+  assert.match(textOf(tree), /الإعداد موجود؛ اقرأ التنبيه وحدد مربع الموافقة أولاً/);
+  assert.equal(h.storeCalls.filter(call => call.action === 'whatsapp.agent.settings.get').length, 2);
+  const consent = find(tree, node => node.type === 'input' && node.props.type === 'checkbox');
+  consent.props.onChange({ target: { checked: true } });
+  tree = h.render();
+  assert.equal(button(tree, 'تفعيل الوكيل').props.disabled, false);
 });
 
 test('conversation controls use local opaque IDs and do not render phone/JID fields', async () => {
