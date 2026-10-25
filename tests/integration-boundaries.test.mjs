@@ -179,6 +179,12 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   const electronBuild = JSON.parse(read('package.json')).build;
   assert.ok(electronBuild.asarUnpack.includes('electron/whatsapp-*.cjs'));
   assert.match(main, /path\.join\(process\.resourcesPath, 'app\.asar\.unpacked', 'electron', 'whatsapp-service\.cjs'\)/);
+  const smokeUserDataOverride = main.indexOf("app.setPath('userData', installedSmokeProfile)");
+  const singleInstanceLock = main.indexOf('acquireSingleInstance(app');
+  const dataDirInitialization = main.indexOf("const dataDir = app.getPath('userData')");
+  assert.ok(smokeUserDataOverride >= 0 && smokeUserDataOverride < singleInstanceLock && smokeUserDataOverride < dataDirInitialization, 'Packaged smoke must use its isolated userData path before locking or initializing storage.');
+  assert.match(main, /AURA_INSTALLED_SMOKE_PROFILE/);
+  assert.match(main, /SMOKE_PROFILE_PATH_INVALID/);
   const serviceReadyWait = main.indexOf("serviceSupervisor.once('ready'");
   const syntheticLoad = main.indexOf('loadResults = await Promise.all');
   assert.ok(serviceReadyWait >= 0 && serviceReadyWait < syntheticLoad, 'The installed performance load must start after WhatsApp worker initialization.');
@@ -227,6 +233,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
   assert.match(windowsSmoke, /resources\/app\.asar\.unpacked\/electron/);
   assert.match(windowsSmoke, /whatsapp-command-queue\.cjs/);
+  assert.match(windowsSmoke, /\$env:AURA_INSTALLED_SMOKE_PROFILE = \$profile/);
   assert.match(windowsSmoke, /'windowShown'/);
   assert.match(windowsSmoke, /smokeError=\$smokeErrorCode/);
   assert.match(windowsSmoke, /serviceError=\$serviceErrorCode/);
@@ -246,7 +253,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /mainEventLoopP99Ms.*serverEventLoopP99Ms.*rendererEventLoopP99Ms/);
   const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
   const smokeEnvironmentSetup = windowsSmoke.indexOf("$env:AURA_INSTALLED_SMOKE = '1'");
-  assert.ok(smokeEnvironmentSetup >= 0 && smokeEnvironmentSetup < installerStart, 'NSIS finish-page app must inherit the installed-smoke environment.');
+  const smokeProfileSetup = windowsSmoke.indexOf('$env:AURA_INSTALLED_SMOKE_PROFILE = $profile');
+  assert.ok(smokeEnvironmentSetup >= 0 && smokeProfileSetup >= 0 && Math.max(smokeEnvironmentSetup, smokeProfileSetup) < installerStart, 'NSIS finish-page app must inherit the installed-smoke environment and isolated userData path.');
+  assert.match(windowsSmoke, /Get-ChildItem -Path \$profile -Filter aura\.sqlite -File -Recurse -Force/);
   assert.match(windowsSmoke, /Using NSIS-launched installed app/);
   assert.match(windowsSmoke, /NSIS did not auto-launch the installed app/);
   assert.match(windowsSmoke, /AddMinutes\(10\)/);

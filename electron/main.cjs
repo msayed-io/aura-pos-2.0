@@ -16,6 +16,14 @@ const { installCloseToTray } = require('./window-lifecycle.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
 const { isDirectJid } = require('./whatsapp-messaging.cjs');
 
+const installedSmokeProfile = process.env.AURA_INSTALLED_SMOKE_PROFILE;
+if (process.env.AURA_INSTALLED_SMOKE === '1' && app.isPackaged) {
+  if (typeof installedSmokeProfile !== 'string' || !path.isAbsolute(installedSmokeProfile)) {
+    throw new Error('SMOKE_PROFILE_PATH_INVALID');
+  }
+  app.setPath('userData', installedSmokeProfile);
+}
+
 let mainWindow;
 let windowCreationPromise;
 let serverProcess;
