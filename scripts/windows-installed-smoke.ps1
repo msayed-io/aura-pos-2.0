@@ -135,7 +135,7 @@ try {
           $eventCodes = @($earlyReport.serviceSupervisorLogCodes | Where-Object { $_ -match '^SERVICE_[A-Z0-9_]{1,48}$' })
           if ($eventCodes.Count -gt 0) { $supervisorEvents = $eventCodes -join ',' }
           $metricValues = @()
-          foreach ($metricName in @('loadConversations','loadReplies','loadOrders','mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopP99Ms')) {
+          foreach ($metricName in @('loadConversations','loadReplies','loadOrders','mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopSamples','rendererEventLoopP95Ms','rendererEventLoopP99Ms','rendererEventLoopMaxMs')) {
             $metricValue = $earlyReport.$metricName
             if ($null -eq $metricValue -or "$metricValue" -notmatch '^\d+(?:\.\d{1,2})?$') { $metricValue = 'unknown' }
             $metricValues += "$metricName=$metricValue"
@@ -152,7 +152,7 @@ try {
   $readyRequired = @('healthReady','databaseReady','windowShown','trayHide','serverContinued','serviceContinued','whatsappRuntimeLoaded','qrObserved','performanceWithinTarget')
   foreach ($name in $readyRequired) { if ($ready.$name -ne $true) { throw "Installed readiness check failed: $name ($($ready.errorCode))" } }
   if ($ready.loadConversations -ne 20 -or $ready.loadReplies -ne 20 -or $ready.loadOrders -ne 0) { throw 'Installed 20-conversation load counts are invalid.' }
-  if ([int]$ready.mainEventLoopSamples -lt 100 -or [int]$ready.serverEventLoopSamples -lt 100 -or [int]$ready.rendererEventLoopSamples -lt 20) { throw 'Installed event-loop p99 sample counts are insufficient.' }
+  if ([int]$ready.mainEventLoopSamples -lt 100 -or [int]$ready.serverEventLoopSamples -lt 100 -or [int]$ready.rendererEventLoopSamples -lt 100) { throw 'Installed event-loop p99 sample counts are insufficient.' }
   foreach ($metric in @('mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopP99Ms')) {
     if ($null -eq $ready.$metric -or [double]$ready.$metric -gt 100) { throw "Installed event-loop p99 target failed: $metric=$($ready.$metric) ms." }
   }
@@ -189,7 +189,7 @@ try {
           $eventCodes = @($exitReport.serviceSupervisorLogCodes | Where-Object { $_ -match '^SERVICE_[A-Z0-9_]{1,48}$' })
           $exitEvents = if ($eventCodes.Count -gt 0) { $eventCodes -join ',' } else { 'none' }
           $exitMetrics = @()
-          foreach ($metricName in @('mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopP99Ms')) {
+          foreach ($metricName in @('mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopSamples','rendererEventLoopP95Ms','rendererEventLoopP99Ms','rendererEventLoopMaxMs')) {
             $metricValue = $exitReport.$metricName
             if ($null -eq $metricValue -or "$metricValue" -notmatch '^\d+(?:\.\d{1,2})?$') { $metricValue = 'unknown' }
             $exitMetrics += "$metricName=$metricValue"

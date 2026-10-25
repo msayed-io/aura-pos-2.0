@@ -755,7 +755,9 @@ async function runInstalledSmoke() {
     rendererEventLoopSamples: 0,
     mainEventLoopP99Ms: null,
     serverEventLoopP99Ms: null,
+    rendererEventLoopP95Ms: null,
     rendererEventLoopP99Ms: null,
+    rendererEventLoopMaxMs: null,
     whatsappServiceMemoryMb: null,
     performanceWithinTarget: false,
     windowShown: false,
@@ -817,16 +819,27 @@ async function runInstalledSmoke() {
     }
     const smokeSettings = await postInternalWhatsApp('smoke.enable-agent', {});
     if (smokeSettings?.enabled !== true) throw new Error('SMOKE_AGENT_NOT_ENABLED');
+    const rendererWarmup = await window.webContents.executeJavaScript(`new Promise(resolve => {
+      const settle = () => {
+        const afterIdle = () => setTimeout(() => resolve(true), 500);
+        if (typeof window.requestIdleCallback === 'function') requestIdleCallback(afterIdle, { timeout: 2000 });
+        else setTimeout(afterIdle, 1000);
+      };
+      if (document.readyState === 'complete') settle();
+      else window.addEventListener('load', settle, { once: true });
+    })`);
+    if (rendererWarmup !== true) throw new Error('SMOKE_RENDERER_WARMUP_FAILED');
     const rendererStarted = await window.webContents.executeJavaScript(`(() => {
       const previous = window.__auraInstalledSmokeProbe;
       if (previous?.timer) clearInterval(previous.timer);
-      const probe = { last: performance.now(), delays: [], timer: null };
+      const intervalMs = 2;
+      const probe = { last: performance.now(), delays: [], timer: null, intervalMs };
       probe.timer = setInterval(() => {
         const now = performance.now();
-        probe.delays.push(Math.max(0, now - probe.last - 5));
+        probe.delays.push(Math.max(0, now - probe.last - probe.intervalMs));
         probe.last = now;
         if (probe.delays.length > 10000) probe.delays.shift();
-      }, 5);
+      }, intervalMs);
       window.__auraInstalledSmokeProbe = probe;
       return true;
     })()`);
@@ -866,15 +879,24 @@ async function runInstalledSmoke() {
       if (!probe) return null;
       clearInterval(probe.timer);
       const sorted = probe.delays.slice().sort((a, b) => a - b);
+      const percentile = ratio => sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * ratio) - 1)] : null;
       const p99 = sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * 0.99) - 1)] : null;
-      return { samples: sorted.length, p99Ms: p99 === null ? null : Number(p99.toFixed(1)) };
+      return {
+        samples: sorted.length,
+        p95Ms: percentile(0.95) === null ? null : Number(percentile(0.95).toFixed(1)),
+        p99Ms: p99 === null ? null : Number(p99.toFixed(1)),
+        maxMs: sorted.length ? Number(sorted[sorted.length - 1].toFixed(1)) : null,
+      };
     })()`);
-    if (!rendererMetrics || rendererMetrics.samples < 1 || !Number.isFinite(rendererMetrics.p99Ms)) {
+    if (!rendererMetrics || rendererMetrics.samples < 1 || !Number.isFinite(rendererMetrics.p95Ms)
+      || !Number.isFinite(rendererMetrics.p99Ms) || !Number.isFinite(rendererMetrics.maxMs)) {
       throw new Error('SMOKE_RENDERER_METRICS_MISSING');
     }
     result.rendererEventLoopSamples = rendererMetrics.samples;
-    if (result.rendererEventLoopSamples < 20) throw new Error('SMOKE_RENDERER_METRICS_MISSING');
+    if (result.rendererEventLoopSamples < 100) throw new Error('SMOKE_RENDERER_METRICS_MISSING');
+    result.rendererEventLoopP95Ms = rendererMetrics.p95Ms;
     result.rendererEventLoopP99Ms = rendererMetrics.p99Ms;
+    result.rendererEventLoopMaxMs = rendererMetrics.maxMs;
     result.performanceWithinTarget = result.loadReplies === 20 && result.loadOrders === 0
       && [result.mainEventLoopP99Ms, result.serverEventLoopP99Ms, result.rendererEventLoopP99Ms]
         .every(value => Number.isFinite(value) && value <= 100);

@@ -205,6 +205,11 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /SMOKE_SERVER_METRICS_MISSING/);
   assert.match(main, /monitorEventLoopDelay\(\{ resolution: 1 \}\)/);
   assert.match(main, /mainEventLoopSamples < 100/);
+  assert.match(main, /rendererWarmup = await window\.webContents\.executeJavaScript/);
+  assert.match(main, /requestIdleCallback/);
+  assert.match(main, /rendererEventLoopSamples < 100/);
+  assert.match(main, /rendererEventLoopP95Ms/);
+  assert.match(main, /rendererEventLoopMaxMs/);
   const route = read('src/app/api/internal/whatsapp/route.ts');
   assert.match(route, /case 'smoke\.enable-agent':[\s\S]*?process\.env\.AURA_INSTALLED_SMOKE !== '1'/);
   const agent = read('local-services/whatsapp-agent.cjs');
@@ -226,6 +231,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /exitReport\.errorCode/);
   assert.match(windowsSmoke, /soakDurationMs=\$exitSoakMs/);
   assert.match(windowsSmoke, /supervisorEvents=\$exitEvents/);
+  assert.match(windowsSmoke, /rendererEventLoopSamples -lt 100/);
+  assert.match(windowsSmoke, /rendererEventLoopP95Ms/);
+  assert.match(windowsSmoke, /rendererEventLoopMaxMs/);
   assert.match(windowsSmoke, /serviceRestarts=\$serviceRestartCount/);
   assert.match(windowsSmoke, /servicePid=\$servicePid/);
   assert.match(windowsSmoke, /supervisorEvents=\$supervisorEvents/);
