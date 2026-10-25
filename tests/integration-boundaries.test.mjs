@@ -268,8 +268,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /CreationDate/);
   assert.match(windowsSmoke, /KernelModeTime/);
   assert.match(windowsSmoke, /PrivatePageCount/);
-  assert.match(windowsSmoke, /nextSampleAt = \$nextSampleAt\.AddSeconds\(2\)/);
-  assert.doesNotMatch(windowsSmoke, /\$nextSampleAt = \$now\.AddSeconds\(2\)/);
+  assert.match(windowsSmoke, /\$nextSampleAt = \$now\.AddSeconds\(2\)/);
   assert.match(windowsSmoke, /observedProcessIdentities\.Contains/);
   assert.match(windowsSmoke, /lastFiveMinutesCoverageSeconds -lt 300/);
   assert.match(windowsSmoke, /cpuIntervalWeightSeconds -lt 300/);

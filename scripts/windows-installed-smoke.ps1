@@ -225,7 +225,7 @@ try {
     }
     $lastSnapshot = $snapshot
     $lastSampleAt = $now
-    $nextSampleAt = $nextSampleAt.AddSeconds(2)
+    $nextSampleAt = $now.AddSeconds(2)
   }
   $soakDurationSeconds = [math]::Round(((Get-Date) - $soakStartedAt).TotalSeconds, 1)
   if ($soakDurationSeconds -lt 600) { throw "Installed soak lasted only $soakDurationSeconds seconds." }
