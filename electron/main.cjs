@@ -16,14 +16,6 @@ const { installCloseToTray } = require('./window-lifecycle.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
 const { isDirectJid } = require('./whatsapp-messaging.cjs');
 
-const installedSmokeProfile = process.env.AURA_INSTALLED_SMOKE_PROFILE;
-if (process.env.AURA_INSTALLED_SMOKE === '1' && app.isPackaged) {
-  if (typeof installedSmokeProfile !== 'string' || !path.isAbsolute(installedSmokeProfile)) {
-    throw new Error('SMOKE_PROFILE_PATH_INVALID');
-  }
-  app.setPath('userData', installedSmokeProfile);
-}
-
 let mainWindow;
 let windowCreationPromise;
 let serverProcess;
@@ -750,6 +742,7 @@ async function runInstalledSmoke() {
   const smokeLiveWhatsAppStates = new Set(['qr', 'connecting', 'reconnecting', 'connected']);
   const result = {
     schema: 2,
+    databaseFilePath: path.join(dataDir, 'aura.sqlite'),
     healthReady: false,
     databaseReady: false,
     trayHide: false,
@@ -809,7 +802,7 @@ async function runInstalledSmoke() {
     if (!reportPath || !readyPath || !stopPath) throw new Error('SMOKE_REPORT_PATH_REQUIRED');
     await ensureLocalServer();
     result.healthReady = true;
-    result.databaseReady = fs.existsSync(path.join(dataDir, 'aura.sqlite'));
+    result.databaseReady = fs.existsSync(result.databaseFilePath);
     if (!result.databaseReady) throw new Error('SMOKE_DATABASE_MISSING');
     const window = mainWindow;
     if (!window || window.isDestroyed()) throw new Error('SMOKE_WINDOW_MISSING');

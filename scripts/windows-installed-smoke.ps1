@@ -80,7 +80,6 @@ try {
 
   # NSIS may start the app from its finish action; set smoke variables before installing so that process inherits them.
   $env:AURA_INSTALLED_SMOKE = '1'
-  $env:AURA_INSTALLED_SMOKE_PROFILE = $profile
   $env:AURA_INSTALLED_SMOKE_REPORT = $report
   $env:AURA_INSTALLED_SMOKE_READY = $readyReport
   $env:AURA_INSTALLED_SMOKE_STOP = $stopSignal
@@ -347,8 +346,10 @@ try {
     $observedProcessIdentities.Contains("$([int]$_.ProcessId)|$creation")
   })
   if ($orphans) { $orphans | ForEach-Object { Write-Host "Orphan PID $($_.ProcessId)" }; throw 'Installed application left child processes running.' }
-  $db = Get-ChildItem -Path $profile -Filter aura.sqlite -File -Recurse -Force | Select-Object -First 1
-  if (!$db -or $db.Length -le 0) { throw 'Smoke database is missing or empty.' }
+  $databaseFilePath = [string]$smoke.databaseFilePath
+  if ([string]::IsNullOrWhiteSpace($databaseFilePath) -or ![System.IO.Path]::IsPathRooted($databaseFilePath) -or [System.IO.Path]::GetFileName($databaseFilePath) -ne 'aura.sqlite' -or !(Test-Path -LiteralPath $databaseFilePath -PathType Leaf)) { throw 'Smoke database is missing or empty.' }
+  $db = Get-Item -LiteralPath $databaseFilePath -Force
+  if ($db.Length -le 0) { throw 'Smoke database is missing or empty.' }
 
   # Verify that the isolated Baileys dependency is the pinned release used to reach QR.
   $runtime = Join-Path $installDir 'resources/whatsapp-runtime'
