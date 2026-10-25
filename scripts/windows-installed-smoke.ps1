@@ -116,6 +116,8 @@ try {
       $serviceErrorCode = 'none'
       $serviceState = 'unknown'
       $serviceRestartCount = 'unknown'
+      $servicePid = 'unknown'
+      $supervisorEvents = 'none'
       $performanceSummary = 'unavailable'
       if (Test-Path $report) {
         try {
@@ -124,6 +126,9 @@ try {
           if ($earlyReport.serviceErrorCode -match '^[A-Z0-9_]{1,48}$') { $serviceErrorCode = $earlyReport.serviceErrorCode }
           if ($earlyReport.serviceStateAtExit -match '^[a-z-]{1,24}$') { $serviceState = $earlyReport.serviceStateAtExit }
           if ($null -ne $earlyReport.serviceRestartCount -and "$($earlyReport.serviceRestartCount)" -match '^\d{1,4}$') { $serviceRestartCount = $earlyReport.serviceRestartCount }
+          if ($null -ne $earlyReport.servicePidAtExit -and "$($earlyReport.servicePidAtExit)" -match '^\d{1,10}$') { $servicePid = $earlyReport.servicePidAtExit }
+          $eventCodes = @($earlyReport.serviceSupervisorLogCodes | Where-Object { $_ -match '^SERVICE_[A-Z0-9_]{1,48}$' })
+          if ($eventCodes.Count -gt 0) { $supervisorEvents = $eventCodes -join ',' }
           $metricValues = @()
           foreach ($metricName in @('loadConversations','loadReplies','loadOrders','mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopP99Ms')) {
             $metricValue = $earlyReport.$metricName
@@ -133,7 +138,7 @@ try {
           $performanceSummary = $metricValues -join ','
         } catch { $smokeErrorCode = 'unreadable' }
       }
-      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceRestarts=$serviceRestartCount; performance=$performanceSummary)."
+      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceRestarts=$serviceRestartCount; servicePid=$servicePid; supervisorEvents=$supervisorEvents; performance=$performanceSummary)."
     }
     Start-Sleep -Milliseconds 500
   }

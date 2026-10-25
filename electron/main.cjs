@@ -29,6 +29,7 @@ let conversationHashKey;
 let tray;
 let mainWindowShowEvents = 0;
 let lastWhatsAppServiceErrorCode = null;
+let whatsAppSupervisorLogCodes = [];
 let serviceSupervisor;
 let serviceState = 'idle';
 let whatsappQr = null;
@@ -770,7 +771,9 @@ async function runInstalledSmoke() {
     if (serviceSupervisor) {
       result.serviceStateAtExit = serviceSupervisor.state;
       result.serviceRestartCount = serviceSupervisor.restartCount;
+      result.servicePidAtExit = serviceSupervisor.snapshot().pid;
     }
+    result.serviceSupervisorLogCodes = whatsAppSupervisorLogCodes.slice(-12);
     result.ok = !error && result.healthReady && result.databaseReady && result.windowShown && result.trayHide && result.serverContinued
       && result.whatsappRuntimeLoaded && result.qrObserved && result.serviceContinued
       && result.loadConversations === 20 && result.loadReplies === 20 && result.loadOrders === 0
@@ -979,6 +982,13 @@ if (hasSingleInstanceLock) {
     createTray();
     serviceSupervisor = new UtilityServiceSupervisor({
       utilityProcess, app, entry: serviceEntry, serviceName: 'Aura WhatsApp Service',
+      log: (code, context = {}) => {
+        if (typeof code === 'string' && /^SERVICE_[A-Z0-9_]{1,48}$/.test(code)) {
+          whatsAppSupervisorLogCodes.push(code);
+          if (whatsAppSupervisorLogCodes.length > 12) whatsAppSupervisorLogCodes.shift();
+        }
+        console.error(JSON.stringify({ component: 'service-supervisor', code, ...context }));
+      },
       childEnv: {
         AURA_WHATSAPP_SESSION_DIR: whatsappSessionDir,
         AURA_WHATSAPP_RUNTIME_PACKAGE: whatsappRuntimePackagePath,

@@ -189,6 +189,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /lastWhatsAppServiceErrorCode = errorCode/);
   assert.match(main, /result\.serviceStateAtExit = serviceSupervisor\.state/);
   assert.match(main, /result\.serviceRestartCount = serviceSupervisor\.restartCount/);
+  assert.match(main, /result\.servicePidAtExit = serviceSupervisor\.snapshot\(\)\.pid/);
+  assert.match(main, /whatsAppSupervisorLogCodes\.push\(code\)/);
   assert.match(main, /SMOKE_RENDERER_METRICS_MISSING/);
   assert.match(main, /SMOKE_SERVER_METRICS_MISSING/);
   assert.match(main, /monitorEventLoopDelay\(\{ resolution: 1 \}\)/);
@@ -209,6 +211,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /serviceError=\$serviceErrorCode/);
   assert.match(windowsSmoke, /serviceState=\$serviceState/);
   assert.match(windowsSmoke, /serviceRestarts=\$serviceRestartCount/);
+  assert.match(windowsSmoke, /servicePid=\$servicePid/);
+  assert.match(windowsSmoke, /supervisorEvents=\$supervisorEvents/);
   assert.match(windowsSmoke, /loadConversations.*loadReplies.*loadOrders/);
   assert.match(windowsSmoke, /mainEventLoopP99Ms.*serverEventLoopP99Ms.*rendererEventLoopP99Ms/);
   const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
