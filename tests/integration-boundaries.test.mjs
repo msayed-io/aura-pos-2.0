@@ -362,7 +362,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
 });
 
 test('Windows release is master-only, versioned, run-owned and cleans only partial publication', () => {
-  const workflow = read('.github/workflows/aura-pos-windows-release.yml');
+  const workflow = read('.github/workflows/aura-pos-windows-release.yml').replace(/\r\n/g, '\n');
   assert.match(workflow, /Upload Windows resource sample[\s\S]*?if: always\(\)[\s\S]*?name: windows-installed-resource-sample-\$\{\{ github\.run_id \}\}[\s\S]*?path: windows-installed-resource-sample\.json[\s\S]*?if-no-files-found: warn/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /publish:[\s\S]*?if: github\.ref == 'refs\/heads\/master'/);
@@ -382,6 +382,18 @@ test('Windows release is master-only, versioned, run-owned and cleans only parti
   assert.match(workflow, /Preserved the fully published, verified release/);
   assert.match(workflow, /Refusing to delete tag \$tag without this run's ownership marker/);
   assert.match(workflow, /--cleanup-tag --yes/);
+  const releasePreflight = workflow.slice(
+    workflow.indexOf('- name: Validate version and preflight duplicate tag or release'),
+    workflow.indexOf('- name: Create draft, upload, verify and publish release transactionally')
+  );
+  assert.match(releasePreflight, /gh api "repos\/\$repo\/releases\/tags\/\$tag" 2>&1/);
+  assert.match(releasePreflight, /\$releaseLookupExit = \$LASTEXITCODE/);
+  assert.match(releasePreflight, /\$releaseLookupExit -ne 1 -or \$releaseLookupText -notmatch 'Not Found\|HTTP 404'/);
+  assert.match(releasePreflight, /\$LASTEXITCODE = 0/);
+  assert.match(releasePreflight, /\$PSNativeCommandUseErrorActionPreference = \$false/);
+  assert.doesNotMatch(releasePreflight, /gh release view \$tag/);
+  assert.ok(workflow.includes("$PSNativeCommandUseErrorActionPreference = $false\n          $tag = '${{ steps.release.outputs.tag }}'"));
+  assert.ok(workflow.includes("elseif (($releaseResponse -join ' ') -match 'Not Found|HTTP 404' -and ($refResponse -join ' ') -match 'Not Found|HTTP 404') {\n              $LASTEXITCODE = 0"));
 });
 
 test('startup and periodic recovery resumes only stale inbound messages through the local queue', () => {
