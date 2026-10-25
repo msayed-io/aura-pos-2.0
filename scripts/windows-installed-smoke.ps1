@@ -116,6 +116,7 @@ try {
       $serviceErrorCode = 'none'
       $serviceState = 'unknown'
       $serviceRestartCount = 'unknown'
+      $performanceSummary = 'unavailable'
       if (Test-Path $report) {
         try {
           $earlyReport = Get-Content $report -Raw | ConvertFrom-Json
@@ -123,9 +124,16 @@ try {
           if ($earlyReport.serviceErrorCode -match '^[A-Z0-9_]{1,48}$') { $serviceErrorCode = $earlyReport.serviceErrorCode }
           if ($earlyReport.serviceStateAtExit -match '^[a-z-]{1,24}$') { $serviceState = $earlyReport.serviceStateAtExit }
           if ($null -ne $earlyReport.serviceRestartCount -and "$($earlyReport.serviceRestartCount)" -match '^\d{1,4}$') { $serviceRestartCount = $earlyReport.serviceRestartCount }
+          $metricValues = @()
+          foreach ($metricName in @('loadConversations','loadReplies','loadOrders','mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopP99Ms')) {
+            $metricValue = $earlyReport.$metricName
+            if ($null -eq $metricValue -or "$metricValue" -notmatch '^\d+(?:\.\d{1,2})?$') { $metricValue = 'unknown' }
+            $metricValues += "$metricName=$metricValue"
+          }
+          $performanceSummary = $metricValues -join ','
         } catch { $smokeErrorCode = 'unreadable' }
       }
-      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceRestarts=$serviceRestartCount)."
+      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceRestarts=$serviceRestartCount; performance=$performanceSummary)."
     }
     Start-Sleep -Milliseconds 500
   }

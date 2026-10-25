@@ -209,6 +209,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /serviceError=\$serviceErrorCode/);
   assert.match(windowsSmoke, /serviceState=\$serviceState/);
   assert.match(windowsSmoke, /serviceRestarts=\$serviceRestartCount/);
+  assert.match(windowsSmoke, /loadConversations.*loadReplies.*loadOrders/);
+  assert.match(windowsSmoke, /mainEventLoopP99Ms.*serverEventLoopP99Ms.*rendererEventLoopP99Ms/);
   const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
   const smokeEnvironmentSetup = windowsSmoke.indexOf("$env:AURA_INSTALLED_SMOKE = '1'");
   assert.ok(smokeEnvironmentSetup >= 0 && smokeEnvironmentSetup < installerStart, 'NSIS finish-page app must inherit the installed-smoke environment.');
