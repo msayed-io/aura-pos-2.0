@@ -171,9 +171,9 @@ export async function POST(request: NextRequest) {
         break;
       }
       case 'gemini.test': {
-        const checked = z.object({}).strict().safeParse(payload ?? {});
+        const checked = z.object({ apiKey: z.string().max(256).optional() }).strict().safeParse(payload ?? {});
         if (!checked.success) throw new RequestError('INVALID_GEMINI_TEST', 400, 'طلب اختبار Gemini غير صالح.');
-        data = await testLocalGemini();
+        data = await testLocalGemini(checked.data.apiKey);
         break;
       }
       case 'smoke.enable-agent': {

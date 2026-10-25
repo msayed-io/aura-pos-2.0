@@ -239,7 +239,25 @@ async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKe
   } catch {
     throw new WhatsAppAgentError('LOCAL_GEMINI_UNAVAILABLE');
   }
-  if (!response.ok) throw new WhatsAppAgentError(response.status === 429 ? 'LOCAL_GEMINI_RATE_LIMITED' : 'LOCAL_GEMINI_UNAVAILABLE');
+  if (!response.ok) {
+    let code = response.status === 429 ? 'LOCAL_GEMINI_RATE_LIMITED'
+      : response.status === 401 ? 'LOCAL_GEMINI_KEY_REJECTED'
+        : response.status === 403 ? 'LOCAL_GEMINI_ACCESS_DENIED'
+          : response.status === 404 ? 'LOCAL_GEMINI_MODEL_UNAVAILABLE'
+            : response.status >= 500 ? 'LOCAL_GEMINI_SERVICE_UNAVAILABLE'
+              : 'LOCAL_GEMINI_REQUEST_REJECTED';
+    if (response.status === 400) {
+      try {
+        const errorBody = await readBoundedJson(response, 8192);
+        const providerError = errorBody?.error;
+        const safeErrorText = `${providerError?.status || ''} ${providerError?.message || ''}`.slice(0, 2048);
+        if (/api[ _-]?key.{0,40}(?:not valid|invalid)|invalid.{0,20}api[ _-]?key|API_KEY_INVALID/i.test(safeErrorText)) {
+          code = 'LOCAL_GEMINI_KEY_REJECTED';
+        }
+      } catch { /* Keep the status-based, non-sensitive classification. */ }
+    }
+    throw new WhatsAppAgentError(code);
+  }
   let body;
   try { body = await readBoundedJson(response, 64 * 1024); }
   catch { throw new WhatsAppAgentError('LOCAL_GEMINI_INVALID_RESPONSE'); }
@@ -252,8 +270,10 @@ async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKe
   return answer;
 }
 
-async function testLocalGemini() {
-  if (!hasLocalGeminiApiKey()) return { ok: false, model: GEMINI_API_MODEL };
+async function testLocalGemini(apiKey = localGeminiApiKey, { fetchImpl = globalThis.fetch } = {}) {
+  if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(apiKey)) {
+    return { ok: false, model: GEMINI_API_MODEL, errorCode: 'LOCAL_GEMINI_NOT_CONFIGURED' };
+  }
   const payload = {
     conversationHash: '0'.repeat(64),
     messages: [{ role: 'customer', text: 'اختبار اصطناعي للاتصال. أجب بكلمة واحدة: جاهز.' }],
@@ -261,8 +281,14 @@ async function testLocalGemini() {
     draft: { id: null, version: 0, status: 'none', items: [] },
     personality: { ...DEFAULT_AGENT_PERSONALITY },
   };
-  try { await requestLocalGemini(payload); return { ok: true, model: GEMINI_API_MODEL }; }
-  catch { return { ok: false, model: GEMINI_API_MODEL }; }
+  try {
+    await requestLocalGemini(payload, { apiKey, fetchImpl });
+    return { ok: true, model: GEMINI_API_MODEL };
+  } catch (error) {
+    const errorCode = error instanceof WhatsAppAgentError && /^[A-Z0-9_]{1,48}$/.test(error.code)
+      ? error.code : 'LOCAL_GEMINI_UNAVAILABLE';
+    return { ok: false, model: GEMINI_API_MODEL, errorCode };
+  }
 }
 
 function parseDraftData(draft) {

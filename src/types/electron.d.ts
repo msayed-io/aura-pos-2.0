@@ -17,9 +17,9 @@ declare global {
       pairWhatsApp: (phoneNumber: string) => Promise<boolean>;
       disconnectWhatsApp: () => Promise<boolean>;
       getGeminiKeyStatus: () => Promise<{ configured: boolean; encryptionAvailable: boolean; errorCode?: string }>;
-      saveGeminiApiKey: (apiKey: string) => Promise<{ configured: boolean }>;
-      clearGeminiApiKey: () => Promise<{ configured: boolean }>;
-      testGeminiApiKey: () => Promise<{ ok: boolean; model: string | null }>;
+      saveGeminiApiKey: (apiKey: string) => Promise<{ configured: boolean; synced?: boolean }>;
+      clearGeminiApiKey: () => Promise<{ configured: boolean; synced?: boolean }>;
+      testGeminiApiKey: (apiKey?: string) => Promise<{ ok: boolean; model: string | null; errorCode?: string }>;
       onWhatsAppStatus: (callback: (payload: { state: WhatsAppConnectionState }) => void) => () => void;
       onWhatsAppQr: (callback: (qr: string | null) => void) => () => void;
       onWhatsAppPairingCode: (callback: (code: string | null) => void) => () => void;

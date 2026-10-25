@@ -3,10 +3,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   Bot, QrCode, Wifi, WifiOff, MessageSquare, Zap, Upload, ChevronDown,
-  AlertCircle, Phone, Clock, Settings, Search, Sparkles, ArrowRight, Save, Plus,
+  AlertCircle, Phone, Clock, Settings, Search, Sparkles, ArrowRight, Save, Plus, Eye, EyeOff,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
 import { localStoreClient } from '@/aura/services/localStoreClient';
+import { useDashboard } from '@/aura/components/dashboard/DashboardContext';
 
 type ConnectionState = 'idle' | 'connecting' | 'qr' | 'pairing' | 'connected' | 'reconnecting' | 'needs-attention' | 'paused' | 'stopping' | 'stopped';
 
@@ -37,8 +38,40 @@ const AgentInfoNotice = () => (
         بيانات الاختبار المجانية قد تُستخدم لتحسين منتجات Google؛ استخدم رسائل ومنيو تجريبيين. لا يُنشأ طلب أو يطبع قبل تأكيد صريح من العميل.
       </p>
     </div>
-  </div>
-);
+    </div>
+  );
+
+function geminiSaveErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : '';
+  if (message.includes('INVALID_GEMINI_API_KEY')) return 'صيغة المفتاح غير مقبولة. انسخه من Google AI Studio دون علامات اقتباس أو مسافات داخلية.';
+  if (message.includes('LOCAL_ENCRYPTION_UNAVAILABLE')) return 'ميزة التشفير الآمن غير متاحة في جلسة Windows الحالية؛ لم نحفظ المفتاح.';
+  if (message.includes('GEMINI_KEY_STORAGE_FAILED') || message.includes('GEMINI_KEY_ENCRYPTION_FAILED')) return 'تعذرت كتابة المفتاح المشفر في مجلد بيانات Aura. تحقق من صلاحية مجلد المستخدم والمساحة المتاحة.';
+  if (message.includes('STOP_AGENT_BEFORE_GEMINI_KEY_CHANGE')) return 'أوقف الوكيل أولاً، ثم احفظ المفتاح أو استبدله.';
+  if (message.includes('LOCAL_SERVER_TIMEOUT') || message.includes('INTERNAL_WHATSAPP_TIMEOUT')) return 'تعذر التحقق من حالة الوكيل المحلي؛ لم نبدأ حفظ المفتاح. أعد المحاولة بعد لحظات.';
+  return 'تعذر حفظ المفتاح. أُبقيت القيمة في الحقل؛ راجع حالة الوكيل المحلي ثم أعد المحاولة.';
+}
+
+function geminiTestFailureMessage(errorCode?: string): string {
+  switch (errorCode) {
+    case 'LOCAL_GEMINI_KEY_REJECTED': return 'رفضت Google المفتاح. راجع أنه من Google AI Studio وأنه صالح وغير محذوف.';
+    case 'LOCAL_GEMINI_ACCESS_DENIED': return 'المفتاح وصل إلى Google، لكن لا يملك صلاحية استخدام Gemini API أو أن الخدمة غير مفعّلة للمشروع.';
+    case 'LOCAL_GEMINI_RATE_LIMITED': return 'المفتاح مقبول، لكن Google أوقفت الطلب مؤقتاً بسبب حد الاستخدام أو الحصة.';
+    case 'LOCAL_GEMINI_MODEL_UNAVAILABLE': return 'النموذج المحدد غير متاح لهذا المفتاح أو المشروع.';
+    case 'LOCAL_GEMINI_REQUEST_REJECTED': return 'رفضت Google صيغة طلب الاختبار؛ لم نتمكن من تقييم صلاحية المفتاح من هذه النتيجة.';
+    case 'LOCAL_GEMINI_INVALID_RESPONSE': return 'وصل رد من Google لكن صيغته لم تطابق المتوقع؛ تحقق من تحديث التطبيق.';
+    case 'LOCAL_GEMINI_SERVICE_UNAVAILABLE':
+    case 'LOCAL_GEMINI_UNAVAILABLE': return 'تعذر الاتصال بخدمة Gemini. تحقق من الإنترنت أو أعد المحاولة لاحقاً.';
+    case 'LOCAL_GEMINI_NOT_CONFIGURED': return 'اكتب مفتاحاً في الحقل أو احفظ مفتاحاً أولاً لإجراء الاختبار.';
+    default: return 'فشل الاختبار دون كشف المفتاح. تحقق من الإنترنت وصلاحية Gemini API أو الحصة ثم أعد المحاولة.';
+  }
+}
+
+function geminiStorageStatusMessage(errorCode?: string): string {
+  if (errorCode === 'LOCAL_ENCRYPTION_UNAVAILABLE') return 'التشفير الآمن غير متاح؛ لن يمكن قراءة المفتاح أو حفظه في هذه الجلسة.';
+  if (errorCode === 'GEMINI_KEY_DECRYPT_FAILED' || errorCode === 'GEMINI_KEY_STORAGE_INVALID') return 'يوجد ملف مفتاح محفوظ لكنه تالف أو غير قابل للفك. احذفه وأدخل المفتاح من جديد.';
+  if (errorCode === 'GEMINI_KEY_STORAGE_FAILED') return 'تعذر الوصول إلى ملف المفتاح المحلي. تحقق من صلاحية مجلد بيانات Aura.';
+  return 'تعذر قراءة حالة المفتاح المحلي؛ لم نعرض أي قيمة سرية.';
+}
 
 type AgentSettings = { enabled: boolean; consentVersion: string | null; consentAcceptedAt: number | null; gatewayConfigured: boolean };
 type AgentPersonality = { botName: string; businessName: string; tone: 'friendly' | 'professional' | 'concise'; replyLength: 'short' | 'medium' | 'long'; instructions: string; useEmoji: boolean };
@@ -76,6 +109,7 @@ const InactiveToggle = ({ label }: { label: string }) => (
 );
 
 const BotAIPage: React.FC = () => {
+  const { showToast } = useDashboard();
   const [view, setView] = useState<'overview' | 'personality'>('overview');
   const [connectionTab, setConnectionTab] = useState<'qr' | 'pairing'>('qr');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionState>('idle');
@@ -98,10 +132,12 @@ const BotAIPage: React.FC = () => {
   const [personalitySaved, setPersonalitySaved] = useState(false);
   const [personalityError, setPersonalityError] = useState('');
   const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [geminiKeyVisible, setGeminiKeyVisible] = useState(false);
   const [geminiKeyConfigured, setGeminiKeyConfigured] = useState(false);
   const [geminiEncryptionAvailable, setGeminiEncryptionAvailable] = useState(false);
   const [geminiBusy, setGeminiBusy] = useState(false);
   const [geminiTestStatus, setGeminiTestStatus] = useState<'idle' | 'success' | 'failed'>('idle');
+  const [geminiTestErrorCode, setGeminiTestErrorCode] = useState('');
   const [geminiError, setGeminiError] = useState('');
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [conversationBusy, setConversationBusy] = useState('');
@@ -137,7 +173,8 @@ const BotAIPage: React.FC = () => {
         if (!active) return;
         setGeminiKeyConfigured(status.configured);
         setGeminiEncryptionAvailable(status.encryptionAvailable);
-        if (!status.encryptionAvailable) setGeminiError('التخزين المشفر غير متاح على هذا الجهاز.');
+        if (status.errorCode) setGeminiError(geminiStorageStatusMessage(status.errorCode));
+        else if (!status.encryptionAvailable) setGeminiError(geminiStorageStatusMessage('LOCAL_ENCRYPTION_UNAVAILABLE'));
       }).catch(() => { if (active) setGeminiError('تعذر قراءة حالة إعداد Gemini من التطبيق.'); });
     }
     void Promise.all([
@@ -230,8 +267,11 @@ const BotAIPage: React.FC = () => {
       const saved = await localStoreClient.call<AgentPersonality>('whatsapp.agent.personality.set', personality as unknown as Record<string, unknown>);
       setPersonality(saved);
       setPersonalitySaved(true);
+      setView('overview');
+      showToast({ message: 'تم حفظ شخصية البوت بنجاح على هذا الجهاز.', type: 'success' });
     } catch {
       setPersonalityError('تعذر حفظ الشخصية محلياً. أوقف الوكيل أولاً وتحقق من أطوال الحقول.');
+      showToast({ message: 'تعذر حفظ شخصية البوت؛ بقيت في صفحة التعديل لتصحيح المشكلة.', type: 'error' });
     } finally {
       setPersonalityBusy(false);
     }
@@ -249,13 +289,21 @@ const BotAIPage: React.FC = () => {
     setGeminiBusy(true);
     setGeminiError('');
     setGeminiTestStatus('idle');
+    setGeminiTestErrorCode('');
     try {
       const saved = await api.saveGeminiApiKey(geminiKeyInput.trim());
       setGeminiKeyInput('');
       setGeminiKeyConfigured(saved.configured);
-      await refreshAgentSettings();
-    } catch {
-      setGeminiError('تعذر حفظ المفتاح. تأكد من نسخ مفتاح API الصحيح ومن توفر التخزين المشفر على هذا الجهاز.');
+      if (saved.synced) setAgentSettings(current => ({ ...current, gatewayConfigured: true }));
+      try { await refreshAgentSettings(); } catch { /* A completed encrypted write is still a successful save. */ }
+      showToast({
+        message: saved.synced === false
+          ? 'حُفظ مفتاح Gemini مشفراً محلياً؛ ستتم مزامنته مع الخدمة المحلية عند المحاولة التالية.'
+          : 'تم حفظ مفتاح Gemini مشفراً على هذا الجهاز بنجاح.',
+        type: saved.synced === false ? 'info' : 'success',
+      });
+    } catch (error) {
+      setGeminiError(geminiSaveErrorMessage(error));
     } finally {
       setGeminiBusy(false);
     }
@@ -267,11 +315,16 @@ const BotAIPage: React.FC = () => {
     setGeminiBusy(true);
     setGeminiError('');
     setGeminiTestStatus('idle');
+    setGeminiTestErrorCode('');
     try {
-      await api.clearGeminiApiKey();
+      const cleared = await api.clearGeminiApiKey();
       setGeminiKeyConfigured(false);
       setGeminiKeyInput('');
-      await refreshAgentSettings();
+      try { await refreshAgentSettings(); } catch { /* Keep the local deletion result authoritative. */ }
+      showToast({
+        message: cleared.synced === false ? 'حُذف المفتاح محلياً؛ ستتم مزامنة الإزالة عند المحاولة التالية.' : 'تم حذف مفتاح Gemini من هذا الجهاز.',
+        type: cleared.synced === false ? 'info' : 'success',
+      });
     } catch {
       setGeminiError('تعذر حذف المفتاح. أوقف الوكيل أولاً ثم حاول مرة أخرى.');
     } finally {
@@ -285,11 +338,15 @@ const BotAIPage: React.FC = () => {
     setGeminiBusy(true);
     setGeminiError('');
     setGeminiTestStatus('idle');
+    setGeminiTestErrorCode('');
     try {
-      const result = await api.testGeminiApiKey();
+      const result = await api.testGeminiApiKey(geminiKeyInput.trim() || undefined);
       setGeminiTestStatus(result.ok ? 'success' : 'failed');
+      setGeminiTestErrorCode(result.errorCode || '');
+      if (result.ok) setAgentSettings(current => ({ ...current, gatewayConfigured: true }));
     } catch {
       setGeminiTestStatus('failed');
+      setGeminiTestErrorCode('LOCAL_GEMINI_UNAVAILABLE');
     } finally {
       setGeminiBusy(false);
     }
@@ -528,17 +585,22 @@ const BotAIPage: React.FC = () => {
         <div className="p-5 space-y-4">
           <p className="text-xs leading-6 text-neo-secondary/70">أدخل مفتاح Google AI Studio الخاص بك. يُحفظ محلياً مشفراً بنظام Windows، ولا يُعرض بعد الحفظ ولا يُكتب في السجلات أو إعدادات التطبيق. النموذج المختار: <span dir="ltr" className="font-semibold">Gemini 3.8 Flash</span>.</p>
           <label className="block text-sm font-semibold text-neo-secondary/80">مفتاح Gemini API
-            <input type="password" autoComplete="off" spellCheck={false} value={geminiKeyInput} onChange={event => { setGeminiKeyInput(event.target.value); setGeminiTestStatus('idle'); setGeminiError(''); }} disabled={!window.electronAPI || !geminiEncryptionAvailable || geminiBusy || agentSettings.enabled} placeholder={geminiKeyConfigured ? 'مفتاح محفوظ — اكتب قيمة جديدة للاستبدال' : 'ألصق مفتاح API هنا'} dir="ltr" className={`${inputClass} mt-1.5 font-mono`} />
+            <div className="relative mt-1.5">
+              <input type={geminiKeyVisible ? 'text' : 'password'} autoComplete="off" spellCheck={false} value={geminiKeyInput} onChange={event => { setGeminiKeyInput(event.target.value); setGeminiTestStatus('idle'); setGeminiTestErrorCode(''); setGeminiError(''); }} disabled={!window.electronAPI || !geminiEncryptionAvailable || geminiBusy || agentSettings.enabled} placeholder={geminiKeyConfigured ? 'مفتاح محفوظ — اكتب قيمة جديدة للاستبدال' : 'ألصق مفتاح API هنا'} dir="ltr" aria-label="مفتاح Gemini API" className={`${inputClass} pl-12 font-mono`} />
+              <button type="button" onClick={() => setGeminiKeyVisible(visible => !visible)} aria-label={geminiKeyVisible ? 'إخفاء المفتاح' : 'إظهار المفتاح'} title={geminiKeyVisible ? 'إخفاء المفتاح' : 'إظهار المفتاح'} className="absolute left-3 top-1/2 -translate-y-1/2 p-2 text-neo-secondary/60 hover:text-neo-primary" aria-pressed={geminiKeyVisible}>
+                {geminiKeyVisible ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
+              </button>
+            </div>
           </label>
           <div className="flex flex-wrap gap-2">
             <button type="button" onClick={() => { void saveGeminiKey(); }} disabled={!window.electronAPI || !geminiEncryptionAvailable || geminiBusy || agentSettings.enabled || !geminiKeyInput.trim()} className={buttonClass}>{geminiBusy ? 'جارٍ التنفيذ…' : 'حفظ المفتاح محلياً'}</button>
-            <button type="button" onClick={() => { void testGeminiKey(); }} disabled={!window.electronAPI || !geminiKeyConfigured || geminiBusy || agentSettings.enabled} className="px-4 py-3 border border-gray-200 text-neo-secondary font-semibold rounded-lg text-sm disabled:opacity-50">اختبار الاتصال (طلب تجريبي)</button>
+            <button type="button" onClick={() => { void testGeminiKey(); }} disabled={!window.electronAPI || (!geminiKeyConfigured && !geminiKeyInput.trim()) || geminiBusy || agentSettings.enabled} className="px-4 py-3 border border-gray-200 text-neo-secondary font-semibold rounded-lg text-sm disabled:opacity-50">{geminiBusy ? 'جارٍ التنفيذ…' : 'اختبار الاتصال (طلب تجريبي)'}</button>
             <button type="button" onClick={() => { void clearGeminiKey(); }} disabled={!window.electronAPI || !geminiKeyConfigured || geminiBusy || agentSettings.enabled} className="px-4 py-3 border border-red-200 text-red-600 font-semibold rounded-lg text-sm disabled:opacity-50">حذف المفتاح</button>
           </div>
           <p className="text-xs text-neo-secondary/60">{geminiKeyConfigured ? 'يوجد مفتاح محفوظ مشفراً على هذا الجهاز؛ لن نعيد عرضه.' : 'لا يوجد مفتاح Gemini محفوظ على هذا الجهاز.'} {geminiEncryptionAvailable ? 'التخزين المشفر متاح.' : 'التخزين المشفر غير متاح؛ لن يمكن حفظ المفتاح بأمان.'}</p>
           <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">زر الاختبار يرسل مفتاح API في طلب HTTPS وطلباً اصطناعياً فقط إلى Google؛ لا يحتوي على رسالة عميل أو منيو. عند تشغيل الوكيل تُرسل نصوص رسائل WhatsApp وسياق الطلب والمنيو والأسعار إلى Google؛ يحجب التطبيق أرقام الهاتف ومعرّفات WhatsApp والبريد المعروفة، لكن قد تبقى أسماء أو عناوين يذكرها العميل داخل النص. قد تستخدم Google بيانات الطبقة المجانية لتحسين منتجاتها؛ استخدم بيانات وهمية للاختبار.</p>
           {geminiTestStatus === 'success' && <p role="status" className="text-sm text-green-700">نجح الاتصال بالنموذج المحدد.</p>}
-          {geminiTestStatus === 'failed' && <p role="status" className="text-sm text-red-600">فشل الاختبار. راجع صلاحية المفتاح واتصال الإنترنت أو حد الاستخدام.</p>}
+          {geminiTestStatus === 'failed' && <p role="status" className="text-sm text-red-600">{geminiTestFailureMessage(geminiTestErrorCode)}</p>}
           {geminiError && <p role="alert" className="text-sm text-red-600">{geminiError}</p>}
         </div>
       </section>

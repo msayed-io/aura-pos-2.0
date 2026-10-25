@@ -15,7 +15,8 @@ const { UtilityServiceSupervisor } = require('./service-supervisor.cjs');
 const { installCloseToTray } = require('./window-lifecycle.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
 const { isDirectJid, isValidPairingPhoneNumber } = require('./whatsapp-messaging.cjs');
-const { createSecureGeminiStore } = require('./secure-gemini-store.cjs');
+const { createSecureGeminiStore, validGeminiApiKey } = require('./secure-gemini-store.cjs');
+const { createGeminiKeyOperations } = require('./gemini-key-operations.cjs');
 
 let mainWindow;
 let windowCreationPromise;
@@ -78,8 +79,9 @@ const installedSmokeReport = process.env.AURA_INSTALLED_SMOKE_REPORT;
 let installedSmokeStarted = false;
 
 function report(code, error) {
-  const errorCode = error && typeof error === 'object' ? error.code || error.name : undefined;
-  console.error(JSON.stringify({ component: 'electron-main', code, ...(errorCode ? { errorCode: String(errorCode).slice(0, 48) } : {}) }));
+  const rawCode = error && typeof error === 'object' ? error.code || error.message || error.name : undefined;
+  const safeErrorCode = typeof rawCode === 'string' ? rawCode.match(/^[A-Z0-9_]{1,48}$/)?.[0] : undefined;
+  console.error(JSON.stringify({ component: 'electron-main', code, ...(safeErrorCode ? { errorCode: safeErrorCode } : {}) }));
 }
 
 function publishWhatsAppStatus(snapshot) {
@@ -624,6 +626,15 @@ function showNewOrderNotification(displayId) {
 function registerIpc() {
   if (ipcRegistered) return;
   ipcRegistered = true;
+  const geminiKeyOperations = createGeminiKeyOperations({
+    store: geminiKeyStore,
+    getAgentStatus: () => postInternalWhatsApp('gemini.status'),
+    sync: () => {
+      serverGeminiSynced = false;
+      return postInternalWhatsApp('gemini.status');
+    },
+    onSyncDeferred: (operation, error) => report(`GEMINI_KEY_${operation.toUpperCase()}_SYNC_DEFERRED`, error),
+  });
   ipcMain.handle('printers:get', event => { assertTrustedIpc(event); return mainWindow.webContents.getPrintersAsync(); });
   ipcMain.handle('printer-settings:load', event => { assertTrustedIpc(event); return readSettings(); });
   ipcMain.handle('printer-settings:save', (event, settings) => {
@@ -648,34 +659,36 @@ function registerIpc() {
   ipcMain.handle('gemini-key:status', (event, ...args) => {
     assertTrustedIpc(event);
     if (args.length !== 0) throw new Error('INVALID_GEMINI_STATUS_REQUEST');
-    try { return { configured: geminiKeyStore.isConfigured(), encryptionAvailable: safeStorage.isEncryptionAvailable() }; }
-    catch (error) { return { configured: false, encryptionAvailable: safeStorage.isEncryptionAvailable(), errorCode: String(error?.message || 'GEMINI_KEY_STORAGE_FAILED').slice(0, 48) }; }
+    let encryptionAvailable = false;
+    try { encryptionAvailable = safeStorage.isEncryptionAvailable(); } catch { /* Report unavailable without leaking OS details. */ }
+    try { return { configured: geminiKeyStore.isConfigured(), encryptionAvailable }; }
+    catch (error) {
+      const rawCode = typeof error?.message === 'string' ? error.message : 'GEMINI_KEY_STORAGE_FAILED';
+      const errorCode = rawCode.match(/^[A-Z0-9_]{1,48}$/)?.[0] || 'GEMINI_KEY_STORAGE_FAILED';
+      return { configured: false, encryptionAvailable, errorCode };
+    }
   });
   ipcMain.handle('gemini-key:save', async (event, ...args) => {
     assertTrustedIpc(event);
     if (args.length !== 1 || typeof args[0] !== 'string') throw new Error('INVALID_GEMINI_KEY_REQUEST');
-    const state = await postInternalWhatsApp('gemini.status');
-    if (state?.agentEnabled === true) throw new Error('STOP_AGENT_BEFORE_GEMINI_KEY_CHANGE');
-    const saved = geminiKeyStore.save(args[0]);
-    serverGeminiSynced = false;
-    await postInternalWhatsApp('gemini.status');
-    return saved;
+    return geminiKeyOperations.save(args[0]);
   });
   ipcMain.handle('gemini-key:clear', async (event, ...args) => {
     assertTrustedIpc(event);
     if (args.length !== 0) throw new Error('INVALID_GEMINI_KEY_CLEAR_REQUEST');
-    const state = await postInternalWhatsApp('gemini.status');
-    if (state?.agentEnabled === true) throw new Error('STOP_AGENT_BEFORE_GEMINI_KEY_CHANGE');
-    geminiKeyStore.clear();
-    serverGeminiSynced = false;
-    await postInternalWhatsApp('gemini.status');
-    return { configured: false };
+    return geminiKeyOperations.clear();
   });
   ipcMain.handle('gemini-key:test', async (event, ...args) => {
     assertTrustedIpc(event);
-    if (args.length !== 0) throw new Error('INVALID_GEMINI_TEST_REQUEST');
-    const result = await postInternalWhatsApp('gemini.test');
-    return { ok: result?.ok === true, model: typeof result?.model === 'string' ? result.model : null };
+    if (args.length > 1 || (args.length === 1 && typeof args[0] !== 'string')) throw new Error('INVALID_GEMINI_TEST_REQUEST');
+    const apiKey = args.length === 1 ? args[0].trim() : undefined;
+    if (apiKey !== undefined && !validGeminiApiKey(apiKey)) throw new Error('INVALID_GEMINI_API_KEY');
+    const result = await postInternalWhatsApp('gemini.test', apiKey === undefined ? {} : { apiKey });
+    return {
+      ok: result?.ok === true,
+      model: typeof result?.model === 'string' ? result.model : null,
+      ...(typeof result?.errorCode === 'string' ? { errorCode: result.errorCode } : {}),
+    };
   });
   ipcMain.handle('whatsapp:status:get', (event, ...args) => {
     assertTrustedIpc(event);

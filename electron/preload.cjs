@@ -15,7 +15,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getGeminiKeyStatus: () => ipcRenderer.invoke('gemini-key:status'),
   saveGeminiApiKey: (apiKey) => ipcRenderer.invoke('gemini-key:save', apiKey),
   clearGeminiApiKey: () => ipcRenderer.invoke('gemini-key:clear'),
-  testGeminiApiKey: () => ipcRenderer.invoke('gemini-key:test'),
+  testGeminiApiKey: (apiKey) => apiKey === undefined
+    ? ipcRenderer.invoke('gemini-key:test')
+    : ipcRenderer.invoke('gemini-key:test', apiKey),
   onWhatsAppStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('whatsapp:status', listener);

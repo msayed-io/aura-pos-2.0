@@ -44,3 +44,29 @@ test('local Gemini API key stays in memory only and provider errors never disclo
   assert.equal(agent.hasLocalGeminiApiKey(), false);
   assert.throws(() => agent.configureLocalGeminiApiKey('short'), error => error.code === 'INVALID_GEMINI_API_KEY');
 });
+
+test('an unsaved synthetic Gemini key can be tested without persisting it', async () => {
+  agent.configureLocalGeminiApiKey('');
+  const result = await agent.testLocalGemini(TEST_KEY, { fetchImpl: async () => providerResponse() });
+  assert.deepEqual(result, { ok: true, model: 'gemini-3.8-flash' });
+  assert.equal(agent.hasLocalGeminiApiKey(), false);
+});
+
+test('Gemini test classifies invalid key, permission, quota, unavailable model and network errors', async () => {
+  const cases = [
+    [new Response(JSON.stringify({ error: { status: 'INVALID_ARGUMENT', message: 'API key not valid. Please pass a valid API key.' } }), { status: 400 }), 'LOCAL_GEMINI_KEY_REJECTED'],
+    [new Response(JSON.stringify({ error: { status: 'PERMISSION_DENIED', message: 'API disabled' } }), { status: 403 }), 'LOCAL_GEMINI_ACCESS_DENIED'],
+    [new Response('{}', { status: 429 }), 'LOCAL_GEMINI_RATE_LIMITED'],
+    [new Response('{}', { status: 404 }), 'LOCAL_GEMINI_MODEL_UNAVAILABLE'],
+  ];
+  for (const [response, expectedCode] of cases) {
+    const result = await agent.testLocalGemini(TEST_KEY, { fetchImpl: async () => response });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, expectedCode);
+    assert.doesNotMatch(JSON.stringify(result), new RegExp(TEST_KEY));
+  }
+  const unavailable = await agent.testLocalGemini(TEST_KEY, { fetchImpl: async () => { throw new Error(TEST_KEY); } });
+  assert.equal(unavailable.errorCode, 'LOCAL_GEMINI_UNAVAILABLE');
+  assert.doesNotMatch(JSON.stringify(unavailable), new RegExp(TEST_KEY));
+  assert.equal((await agent.testLocalGemini(undefined)).errorCode, 'LOCAL_GEMINI_NOT_CONFIGURED');
+});

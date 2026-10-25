@@ -16,6 +16,7 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
   const effects = [];
   const storeCalls = [];
   const confirmCalls = [];
+  const toastCalls = [];
   let cursor = 0;
   let refCursor = 0;
   const refs = [];
@@ -39,7 +40,7 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
     },
     useEffect(effect) { if (!effectsMounted) effects.push(effect); },
   };
-  const icons = Object.fromEntries(['Bot','QrCode','Wifi','WifiOff','MessageSquare','Zap','Upload','ChevronDown','AlertCircle','Phone','Clock','Settings','Search','Sparkles','ArrowRight','Save','Plus'].map(name => [name, name]));
+  const icons = Object.fromEntries(['Bot','QrCode','Wifi','WifiOff','MessageSquare','Zap','Upload','ChevronDown','AlertCircle','Phone','Clock','Settings','Search','Sparkles','ArrowRight','Save','Plus','Eye','EyeOff'].map(name => [name, name]));
   const defaultSettings = { enabled: false, consentVersion: null, consentAcceptedAt: null, gatewayConfigured: false };
   const localStoreClient = {
     call: async (action, payload = {}) => {
@@ -61,6 +62,7 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
     if (id === 'lucide-react') return icons;
     if (id === 'qrcode.react') return { QRCodeSVG: 'QRCodeSVG' };
     if (id === '@/aura/services/localStoreClient') return { localStoreClient };
+    if (id === '@/aura/components/dashboard/DashboardContext') return { useDashboard: () => ({ showToast: options => toastCalls.push(options) }) };
     throw new Error(`Unexpected import: ${id}`);
   } });
   new vm.Script(compiled, { filename: sourcePath }).runInContext(context);
@@ -75,7 +77,7 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
     }
     return tree;
   }
-  return { render, storeCalls, confirmCalls };
+  return { render, storeCalls, confirmCalls, toastCalls };
 }
 
 const children = node => node && typeof node === 'object' ? (Array.isArray(node.props?.children) ? node.props.children : node.props?.children == null ? [] : [node.props.children]) : [];
@@ -267,7 +269,7 @@ test('business hours, quick replies and manual knowledge expand while controls r
   requireDisabled(node => node.type === 'input' && node.props.type === 'file');
 });
 
-test('personality settings can be edited and persisted locally while unsupported knowledge-base controls stay disabled', async () => {
+test('personality settings save locally, show a success toast and return to overview while unsupported knowledge controls stay disabled', async () => {
   const h = createHarness();
   let tree = h.render();
   assert.match(textOf(tree), /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
@@ -286,7 +288,9 @@ test('personality settings can be edited and persisted locally while unsupported
   const saved = h.storeCalls.find(call => call.action === 'whatsapp.agent.personality.set');
   assert.equal(saved?.payload.botName, 'مساعد تجريبي');
   tree = h.render();
-  assert.match(textOf(tree), /تم حفظ الشخصية على هذا الجهاز/);
+  assert.equal(button(tree, 'تعديل').props.disabled, undefined, 'successful save should leave personality editor');
+  assert.ok(h.toastCalls.some(toast => toast.type === 'success' && /حفظ شخصية البوت بنجاح/.test(toast.message)));
+  tree = click(h, tree, 'تعديل');
   const knowledgeFile = find(tree, node => node.type === 'input' && node.props.type === 'file');
   assert.equal(knowledgeFile.props.disabled, true);
   assert.ok(flatten(tree).some(x => x.node?.type === 'fieldset' && x.node.props.disabled), 'disabled fieldset should enforce inactive fields');
@@ -295,7 +299,7 @@ test('personality settings can be edited and persisted locally while unsupported
 test('only declared WhatsApp preload channels are operational; no generic network, persistence or provider is loaded', () => {
   const imports = [];
   const calls = [];
-  const setters = new Set(['setView','setConnectionTab','setBusinessHoursExpanded','setQuickRepliesExpanded','setManualEntryExpanded','setAgentEnabled','setConversationState','updatePersonality','startWhatsApp','disconnectWhatsApp','startPairing','savePersonality','saveGeminiKey','clearGeminiKey','testGeminiKey','localStoreClient.call']);
+  const setters = new Set(['setView','setConnectionTab','setGeminiKeyVisible','setBusinessHoursExpanded','setQuickRepliesExpanded','setManualEntryExpanded','setAgentEnabled','setConversationState','updatePersonality','startWhatsApp','disconnectWhatsApp','startPairing','savePersonality','saveGeminiKey','clearGeminiKey','testGeminiKey','localStoreClient.call']);
   function visit(node) {
     if (ts.isImportDeclaration(node)) imports.push(node.moduleSpecifier.text);
     if (ts.isCallExpression(node)) {
@@ -306,7 +310,7 @@ test('only declared WhatsApp preload channels are operational; no generic networ
     ts.forEachChild(node, visit);
   }
   visit(ast);
-  assert.deepEqual(imports, ['react', 'lucide-react', 'qrcode.react', '@/aura/services/localStoreClient']);
+  assert.deepEqual(imports, ['react', 'lucide-react', 'qrcode.react', '@/aura/services/localStoreClient', '@/aura/components/dashboard/DashboardContext']);
   assert.ok(imports.every(name => !/provider|axios|firebase|supabase/i.test(name)));
   const liveHandlers = [];
   function scan(node) {
@@ -340,17 +344,17 @@ test('only declared WhatsApp preload channels are operational; no generic networ
   assert.match(source, /QRCodeSVG value=\{qrPayload\}/);
 });
 
-test('Gemini API key UI saves through Electron, clears the input, and never renders the stored key', async () => {
+test('Gemini UI tests an unsaved synthetic key, toggles visibility, and confirms local save even when sync is deferred', async () => {
   let savedKey = '';
-  let testCalls = 0;
+  const testedKeys = [];
   const api = {
     onWhatsAppStatus: () => () => {}, onWhatsAppQr: () => () => {}, onWhatsAppPairingCode: () => () => {},
     getWhatsAppStatus: async () => ({ state: 'idle', qr: null, pairingCode: null }),
     getGeminiKeyStatus: async () => ({ configured: false, encryptionAvailable: true }),
     connectWhatsApp: async () => true, pairWhatsApp: async () => true, disconnectWhatsApp: async () => true,
-    saveGeminiApiKey: async key => { savedKey = key; return { configured: true }; },
+    saveGeminiApiKey: async key => { savedKey = key; return { configured: true, synced: false }; },
     clearGeminiApiKey: async () => ({ configured: false }),
-    testGeminiApiKey: async () => { testCalls += 1; return { ok: true, model: 'gemini-3.8-flash' }; },
+    testGeminiApiKey: async key => { testedKeys.push(key); return { ok: true, model: 'gemini-3.8-flash' }; },
   };
   const h = createHarness(api);
   let tree = h.render();
@@ -360,6 +364,17 @@ test('Gemini API key UI saves through Electron, clears the input, and never rend
   const key = 'synthetic-gemini-key-0123456789';
   input.props.onChange({ target: { value: key } });
   tree = h.render();
+  assert.equal(button(tree, 'اختبار الاتصال').props.disabled, false, 'a draft key can be tested before saving');
+  find(tree, node => node.type === 'button' && node.props['aria-label'] === 'إظهار المفتاح').props.onClick();
+  tree = h.render();
+  assert.equal(find(tree, node => node.type === 'input' && node.props['aria-label'] === 'مفتاح Gemini API').props.type, 'text');
+  find(tree, node => node.type === 'button' && node.props['aria-label'] === 'إخفاء المفتاح').props.onClick();
+  tree = h.render();
+  button(tree, 'اختبار الاتصال').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  assert.equal(testedKeys[0], key);
+  assert.match(textOf(tree), /نجح الاتصال بالنموذج المحدد/);
   button(tree, 'حفظ المفتاح محلياً').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   tree = h.render();
@@ -370,6 +385,7 @@ test('Gemini API key UI saves through Electron, clears the input, and never rend
   button(tree, 'اختبار الاتصال').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
   tree = h.render();
-  assert.equal(testCalls, 1);
+  assert.deepEqual(testedKeys, [key, undefined]);
   assert.match(textOf(tree), /نجح الاتصال بالنموذج المحدد/);
+  assert.ok(h.toastCalls.some(toast => toast.type === 'info' && /ستتم مزامنته/.test(toast.message)));
 });
