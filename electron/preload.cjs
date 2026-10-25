@@ -10,7 +10,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   notifyNewOrder: (displayId) => ipcRenderer.invoke('orders:new-notification', displayId),
   getWhatsAppStatus: () => ipcRenderer.invoke('whatsapp:status:get'),
   connectWhatsApp: () => ipcRenderer.invoke('whatsapp:connect'),
+  pairWhatsApp: (phoneNumber) => ipcRenderer.invoke('whatsapp:pairing', phoneNumber),
   disconnectWhatsApp: () => ipcRenderer.invoke('whatsapp:disconnect'),
+  getGeminiKeyStatus: () => ipcRenderer.invoke('gemini-key:status'),
+  saveGeminiApiKey: (apiKey) => ipcRenderer.invoke('gemini-key:save', apiKey),
+  clearGeminiApiKey: () => ipcRenderer.invoke('gemini-key:clear'),
+  testGeminiApiKey: () => ipcRenderer.invoke('gemini-key:test'),
   onWhatsAppStatus: (callback) => {
     const listener = (_event, payload) => callback(payload);
     ipcRenderer.on('whatsapp:status', listener);
@@ -20,5 +25,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (_event, qr) => callback(qr);
     ipcRenderer.on('whatsapp:qr', listener);
     return () => ipcRenderer.removeListener('whatsapp:qr', listener);
+  },
+  onWhatsAppPairingCode: (callback) => {
+    const listener = (_event, code) => callback(code);
+    ipcRenderer.on('whatsapp:pairing-code', listener);
+    return () => ipcRenderer.removeListener('whatsapp:pairing-code', listener);
   },
 });

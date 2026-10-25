@@ -4,18 +4,42 @@
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { OutboundReplyQueue, isDirectJid, extractPlainText, validReply } = require('./whatsapp-messaging.cjs');
+const { OutboundReplyQueue, isDirectJid, isValidPairingPhoneNumber, extractPlainText, validReply } = require('./whatsapp-messaging.cjs');
 
-const STATES = new Set(['idle', 'connecting', 'qr', 'connected', 'reconnecting', 'needs-attention', 'paused', 'stopping', 'stopped']);
+const STATES = new Set(['idle', 'connecting', 'qr', 'pairing', 'connected', 'reconnecting', 'needs-attention', 'paused', 'stopping', 'stopped']);
 const SAFE_ERROR_CODES = new Set([
   'AUTH_STATE_FAILED', 'SOCKET_START_FAILED', 'CREDS_PERSIST_FAILED', 'SESSION_CLEAR_FAILED',
   'SESSION_QUARANTINE_FAILED', 'CONNECTION_EVENT_FAILED', 'OUTBOUND_SEND_FAILED', 'PRESENCE_RESET_FAILED',
-  'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED',
+  'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED', 'PAIRING_CODE_FAILED', 'PAIRING_PHONE_INVALID',
+  'PAIRING_SESSION_ALREADY_REGISTERED',
 ]);
 
 function disconnectStatus(error) {
   const status = error?.output?.statusCode ?? error?.statusCode;
   return Number.isInteger(status) ? status : null;
+}
+
+function serializeAuthValue(key, value) {
+  if (key === 'pairingCode') return undefined;
+  if (Buffer.isBuffer(value) || value instanceof Uint8Array || value?.type === 'Buffer') {
+    return { type: 'Buffer', data: Buffer.from(value?.data || value).toString('base64') };
+  }
+  return value;
+}
+
+async function persistAuthCredentials(sessionDir, auth) {
+  const creds = auth?.state?.creds;
+  if (!creds || typeof creds !== 'object') throw new TypeError('Auth credentials are unavailable');
+  const contents = JSON.stringify(creds, serializeAuthValue);
+  const filePath = path.join(sessionDir, 'creds.json');
+  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  try {
+    await fs.writeFile(temporaryPath, contents, { mode: 0o600 });
+    await fs.rename(temporaryPath, filePath);
+  } catch (error) {
+    await fs.rm(temporaryPath, { force: true }).catch(() => {});
+    throw error;
+  }
 }
 
 class WhatsAppSession extends EventEmitter {
@@ -30,6 +54,8 @@ class WhatsAppSession extends EventEmitter {
     now = Date.now,
     setTimer = setTimeout,
     clearTimer = clearTimeout,
+    pairingCodeDisplayMs = 30000,
+    persistCredentials,
     sleep = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
     backoffBaseMs = 1000,
     backoffMaxMs = 30000,
@@ -51,6 +77,8 @@ class WhatsAppSession extends EventEmitter {
     this.now = now;
     this.setTimer = setTimer;
     this.clearTimer = clearTimer;
+    this.pairingCodeDisplayMs = pairingCodeDisplayMs;
+    this.persistCredentials = persistCredentials || (auth => persistAuthCredentials(this.sessionDir, auth));
     this.sleep = sleep;
     this.backoffBaseMs = backoffBaseMs;
     this.backoffMaxMs = backoffMaxMs;
@@ -71,6 +99,10 @@ class WhatsAppSession extends EventEmitter {
     this.retryTimer = null;
     this.seenMessages = new Set();
     this.seenMessageOrder = [];
+    this.pairingPhoneNumber = null;
+    this.pairingRequestedSockets = new WeakSet();
+    this.pairingCode = null;
+    this.pairingCodeTimer = null;
     this.outbound = new OutboundReplyQueue({
       random,
       now,
@@ -99,6 +131,14 @@ class WhatsAppSession extends EventEmitter {
     this.emit('qr', null);
   }
 
+  clearPairingCode() {
+    if (this.pairingCodeTimer) this.clearTimer(this.pairingCodeTimer);
+    this.pairingCodeTimer = null;
+    if (this.authState?.state?.creds) delete this.authState.state.creds.pairingCode;
+    this.pairingCode = null;
+    this.emit('pairing-code', null);
+  }
+
   async initialize() {
     if (this.stopped) return false;
     try {
@@ -111,6 +151,11 @@ class WhatsAppSession extends EventEmitter {
         this.setState('needs-attention');
         return false;
       }
+      if (Object.hasOwn(auth.state.creds, 'pairingCode')) {
+        delete auth.state.creds.pairingCode;
+        await this.persistCredentials(auth);
+      }
+      this.authState = auth;
       if (auth.state.creds.registered === true) {
         this.desired = true;
         return this.openSocket(auth);
@@ -126,11 +171,35 @@ class WhatsAppSession extends EventEmitter {
 
   async connect() {
     if (this.stopped || this.suspended) return false;
-    if (this.state === 'connected' || this.state === 'connecting' || this.state === 'qr' || this.state === 'reconnecting') return true;
+    if (this.state === 'connected' || this.state === 'connecting' || this.state === 'qr' || this.state === 'pairing' || this.state === 'reconnecting') return true;
     this.desired = true;
     this.retryCount = 0;
     this.outbound.resume();
     return this.openSocket();
+  }
+
+  async connectWithPairing(phoneNumber) {
+    if (!isValidPairingPhoneNumber(phoneNumber)) {
+      this.report('PAIRING_PHONE_INVALID');
+      return false;
+    }
+    if (this.authState?.state?.creds?.registered === true) {
+      this.report('PAIRING_SESSION_ALREADY_REGISTERED');
+      return false;
+    }
+    if (this.state === 'pairing') {
+      const socket = this.socket;
+      if (!socket || this.pairingCode !== null || this.pairingRequestedSockets.has(socket)) return false;
+      this.pairingPhoneNumber = phoneNumber;
+      return this.requestPairingCode(socket);
+    }
+    if (this.stopped || this.suspended || this.state === 'connected' || this.state === 'connecting'
+      || this.state === 'qr' || this.state === 'reconnecting') return false;
+    this.pairingPhoneNumber = phoneNumber;
+    this.clearPairingCode();
+    const accepted = await this.connect();
+    if (!accepted) this.pairingPhoneNumber = null;
+    return accepted;
   }
 
   async openSocket(existingAuth) {
@@ -159,9 +228,10 @@ class WhatsAppSession extends EventEmitter {
       }
       this.socket = socket;
       this.authState = auth;
+      this.clearPairingCode();
       socket.ev.on('creds.update', () => {
         if (socket !== this.socket || this.disconnectRequested || this.stopped || this.suspended) return;
-        const save = this.authSaveQueue.then(() => auth.saveCreds());
+        const save = this.authSaveQueue.then(() => this.persistCredentials(auth));
         this.authSaveQueue = save.catch(() => this.report('CREDS_PERSIST_FAILED'));
       });
       socket.ev.on('connection.update', update => {
@@ -176,12 +246,59 @@ class WhatsAppSession extends EventEmitter {
     }
   }
 
+  async requestPairingCode(socket) {
+    if (socket !== this.socket || !this.pairingPhoneNumber || this.pairingRequestedSockets.has(socket)) return false;
+    this.pairingRequestedSockets.add(socket);
+    if (this.authState?.state?.creds?.registered === true || typeof socket.requestPairingCode !== 'function') {
+      this.report(this.authState?.state?.creds?.registered === true ? 'PAIRING_SESSION_ALREADY_REGISTERED' : 'PAIRING_CODE_FAILED');
+      this.setState('needs-attention');
+      return false;
+    }
+    const phoneNumber = this.pairingPhoneNumber;
+    try {
+      const code = await socket.requestPairingCode(phoneNumber);
+      if (socket !== this.socket || this.stopped || this.suspended) return false;
+      if (typeof code !== 'string' || !/^[0-9A-HJKMNP-TV-Z]{8}$/.test(code)) {
+        this.pairingRequestedSockets.delete(socket);
+        this.report('PAIRING_CODE_FAILED');
+        this.clearPairingCode();
+        this.setState('pairing');
+        return false;
+      }
+      this.clearQr();
+      this.setState('pairing');
+      this.pairingCode = code;
+      this.emit('pairing-code', code);
+      this.pairingCodeTimer = this.setTimer(() => {
+        this.pairingCodeTimer = null;
+        if (socket !== this.socket || this.pairingCode !== code || this.state !== 'pairing') return;
+        this.pairingRequestedSockets.delete(socket);
+        this.clearPairingCode();
+      }, this.pairingCodeDisplayMs);
+      this.pairingCodeTimer?.unref?.();
+      return true;
+    } catch {
+      if (socket !== this.socket || this.stopped || this.suspended) return false;
+      this.pairingRequestedSockets.delete(socket);
+      this.report('PAIRING_CODE_FAILED');
+      this.clearPairingCode();
+      this.setState('pairing');
+      return false;
+    }
+  }
+
   async handleConnectionUpdate(socket, update) {
     if (socket !== this.socket || this.stopped || !update || typeof update !== 'object') return;
     const hasQr = typeof update.qr === 'string' && update.qr.length > 0 && update.qr.length <= 4096;
     if (hasQr) {
-      this.setState('qr');
-      this.emit('qr', update.qr);
+      if (this.pairingPhoneNumber) {
+        this.setState('pairing');
+        this.clearQr();
+        await this.requestPairingCode(socket);
+      } else {
+        this.setState('qr');
+        this.emit('qr', update.qr);
+      }
     }
     if (update.connection === 'connecting' && !hasQr) this.setState('connecting');
     if (update.connection === 'open') {
@@ -189,6 +306,8 @@ class WhatsAppSession extends EventEmitter {
       this.badSessionCount = 0;
       this.immediateRestartCount = 0;
       this.clearQr();
+      this.clearPairingCode();
+      this.pairingPhoneNumber = null;
       this.setState('connected');
       this.outbound.resume();
     }
@@ -201,6 +320,7 @@ class WhatsAppSession extends EventEmitter {
     this.authState = null;
     this.outbound.clearPending();
     this.clearQr();
+    this.clearPairingCode();
     if (this.suspended) {
       this.setState('paused');
       return;
@@ -320,6 +440,8 @@ class WhatsAppSession extends EventEmitter {
     this.disconnectRequested = true;
     this.cancelRetry();
     this.clearQr();
+    this.clearPairingCode();
+    this.pairingPhoneNumber = null;
     this.outbound.clearPending();
     const socket = this.socket;
     this.socket = null;
@@ -346,6 +468,7 @@ class WhatsAppSession extends EventEmitter {
     this.wasDesiredBeforeSuspend = this.desired;
     this.cancelRetry();
     this.clearQr();
+    this.clearPairingCode();
     this.outbound.clearPending();
     const socket = this.socket;
     this.socket = null;
@@ -378,6 +501,8 @@ class WhatsAppSession extends EventEmitter {
     this.suspended = false;
     this.cancelRetry();
     this.clearQr();
+    this.clearPairingCode();
+    this.pairingPhoneNumber = null;
     this.outbound.stop();
     this.setState('stopping');
     const socket = this.socket;

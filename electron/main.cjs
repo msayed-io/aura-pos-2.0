@@ -14,7 +14,8 @@ const path = require('node:path');
 const { UtilityServiceSupervisor } = require('./service-supervisor.cjs');
 const { installCloseToTray } = require('./window-lifecycle.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
-const { isDirectJid } = require('./whatsapp-messaging.cjs');
+const { isDirectJid, isValidPairingPhoneNumber } = require('./whatsapp-messaging.cjs');
+const { createSecureGeminiStore } = require('./secure-gemini-store.cjs');
 
 let mainWindow;
 let windowCreationPromise;
@@ -23,6 +24,7 @@ let serverExitPromise;
 let serverExited = true;
 let serverPort;
 let serverReady = false;
+let serverGeminiSynced = false;
 let serverShutdownToken;
 let serverWhatsAppToken;
 let conversationHashKey;
@@ -33,6 +35,7 @@ let whatsAppSupervisorLogCodes = [];
 let serviceSupervisor;
 let serviceState = 'idle';
 let whatsappQr = null;
+let whatsappPairingCode = null;
 let closeNoticeShown = false;
 let ipcRegistered = false;
 let appIsQuitting = false;
@@ -60,6 +63,7 @@ const serverRoot = isDev
   : path.join(process.resourcesPath, 'app.asar.unpacked', '.next', 'standalone');
 const serverEntry = path.join(serverRoot, 'server.js');
 const dataDir = app.getPath('userData');
+const geminiKeyStore = createSecureGeminiStore({ safeStorage, filePath: path.join(dataDir, 'gemini-api-key.enc') });
 const settingsPath = path.join(dataDir, 'printer-settings.json');
 const whatsappSessionDir = path.join(dataDir, 'whatsapp-session');
 const whatsappRuntimePackagePath = app.isPackaged
@@ -84,6 +88,10 @@ function publishWhatsAppStatus(snapshot) {
   if (serviceState !== 'qr' && whatsappQr !== null) {
     whatsappQr = null;
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:qr', null);
+  }
+  if (serviceState !== 'pairing' && whatsappPairingCode !== null) {
+    whatsappPairingCode = null;
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:pairing-code', null);
   }
   updateTrayMenu();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:status', { state: serviceState });
@@ -155,8 +163,8 @@ function decryptReplyTarget(encrypted) {
   return jid;
 }
 
-function postInternalWhatsApp(action, payload = {}) {
-  return ensureLocalServer().then(() => new Promise((resolve, reject) => {
+function postInternalWhatsAppDirect(action, payload = {}) {
+  return new Promise((resolve, reject) => {
     if (!serverWhatsAppToken || serverWhatsAppToken.length !== 64) return reject(new Error('INTERNAL_WHATSAPP_TOKEN_UNAVAILABLE'));
     const body = Buffer.from(JSON.stringify({ action, payload }), 'utf8');
     const origin = `http://127.0.0.1:${serverPort}`;
@@ -200,7 +208,20 @@ function postInternalWhatsApp(action, payload = {}) {
     req.on('timeout', () => req.destroy(new Error('INTERNAL_WHATSAPP_TIMEOUT')));
     req.on('error', reject);
     req.end(body);
-  }));
+  });
+}
+
+function postInternalWhatsApp(action, payload = {}) {
+  return ensureLocalServer().then(async () => {
+    if (!serverGeminiSynced) {
+      let apiKey = '';
+      try { apiKey = geminiKeyStore.load() || ''; }
+      catch (error) { report('GEMINI_KEY_LOAD_FAILED', error); }
+      await postInternalWhatsAppDirect('gemini.configure', { apiKey });
+      serverGeminiSynced = true;
+    }
+    return postInternalWhatsAppDirect(action, payload);
+  });
 }
 
 function findFreePort() {
@@ -282,12 +303,14 @@ function startNextServer() {
   serverProcess = child;
   serverExited = false;
   serverReady = false;
+  serverGeminiSynced = false;
   serverExitPromise = new Promise(resolve => child.once('exit', code => resolve({ code })));
   child.on('error', (type) => report('LOCAL_SERVER_PROCESS_ERROR', { name: String(type || 'UNKNOWN') }));
   child.on('exit', code => {
     if (serverProcess !== child) return;
     serverExited = true;
     serverReady = false;
+    serverGeminiSynced = false;
     serverShutdownToken = undefined;
     serverWhatsAppToken = undefined;
     if (code && !appIsQuitting) report('LOCAL_SERVER_EXITED', { code });
@@ -622,15 +645,55 @@ function registerIpc() {
     if (typeof displayId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(displayId)) throw new Error('INVALID_ORDER_DISPLAY_ID');
     return showNewOrderNotification(displayId);
   });
+  ipcMain.handle('gemini-key:status', (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 0) throw new Error('INVALID_GEMINI_STATUS_REQUEST');
+    try { return { configured: geminiKeyStore.isConfigured(), encryptionAvailable: safeStorage.isEncryptionAvailable() }; }
+    catch (error) { return { configured: false, encryptionAvailable: safeStorage.isEncryptionAvailable(), errorCode: String(error?.message || 'GEMINI_KEY_STORAGE_FAILED').slice(0, 48) }; }
+  });
+  ipcMain.handle('gemini-key:save', async (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 1 || typeof args[0] !== 'string') throw new Error('INVALID_GEMINI_KEY_REQUEST');
+    const state = await postInternalWhatsApp('gemini.status');
+    if (state?.agentEnabled === true) throw new Error('STOP_AGENT_BEFORE_GEMINI_KEY_CHANGE');
+    const saved = geminiKeyStore.save(args[0]);
+    serverGeminiSynced = false;
+    await postInternalWhatsApp('gemini.status');
+    return saved;
+  });
+  ipcMain.handle('gemini-key:clear', async (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 0) throw new Error('INVALID_GEMINI_KEY_CLEAR_REQUEST');
+    const state = await postInternalWhatsApp('gemini.status');
+    if (state?.agentEnabled === true) throw new Error('STOP_AGENT_BEFORE_GEMINI_KEY_CHANGE');
+    geminiKeyStore.clear();
+    serverGeminiSynced = false;
+    await postInternalWhatsApp('gemini.status');
+    return { configured: false };
+  });
+  ipcMain.handle('gemini-key:test', async (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 0) throw new Error('INVALID_GEMINI_TEST_REQUEST');
+    const result = await postInternalWhatsApp('gemini.test');
+    return { ok: result?.ok === true, model: typeof result?.model === 'string' ? result.model : null };
+  });
   ipcMain.handle('whatsapp:status:get', (event, ...args) => {
     assertTrustedIpc(event);
     if (args.length !== 0) throw new Error('INVALID_WHATSAPP_STATUS_REQUEST');
-    return { state: serviceState, qr: serviceState === 'qr' ? whatsappQr : null };
+    return { state: serviceState, qr: serviceState === 'qr' ? whatsappQr : null, pairingCode: serviceState === 'pairing' ? whatsappPairingCode : null };
   });
   ipcMain.handle('whatsapp:connect', (event, ...args) => {
     assertTrustedIpc(event);
     if (args.length !== 0) throw new Error('INVALID_WHATSAPP_CONNECT_REQUEST');
     return Boolean(serviceSupervisor?.command('start'));
+  });
+  ipcMain.handle('whatsapp:pairing', (event, ...args) => {
+    assertTrustedIpc(event);
+    if (args.length !== 1 || !isValidPairingPhoneNumber(args[0])) throw new Error('INVALID_WHATSAPP_PAIRING_PHONE');
+    const canStartPairing = ['idle', 'needs-attention', 'stopped'].includes(serviceState);
+    const canRenewPairing = serviceState === 'pairing' && whatsappPairingCode === null;
+    if (!canStartPairing && !canRenewPairing) return false;
+    return Boolean(serviceSupervisor?.pair(args[0]));
   });
   ipcMain.handle('whatsapp:disconnect', (event, ...args) => {
     assertTrustedIpc(event);
@@ -654,6 +717,7 @@ async function createWindow() {
   if (windowCreationPromise) return windowCreationPromise;
   windowCreationPromise = (async () => {
     await ensureLocalServer();
+    await postInternalWhatsApp('gemini.status');
     const window = new BrowserWindow({
       width: 1440,
       height: 1000,
@@ -701,6 +765,7 @@ function currentWhatsAppLabel() {
     connecting: 'جارٍ تجهيز الخدمة',
     paused: 'متوقف مؤقتاً',
     qr: 'بانتظار مسح QR',
+    pairing: 'بانتظار إدخال كود الاقتران',
     connected: 'متصل',
     reconnecting: 'يعيد الاتصال',
     'needs-attention': 'يحتاج إلى تدخل',
@@ -1030,6 +1095,10 @@ if (hasSingleInstanceLock) {
     serviceSupervisor.on('qr', qr => {
       whatsappQr = typeof qr === 'string' && qr.length <= 4096 ? qr : null;
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:qr', whatsappQr);
+    });
+    serviceSupervisor.on('pairing-code', code => {
+      whatsappPairingCode = code === null || (typeof code === 'string' && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(code)) ? code : null;
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:pairing-code', whatsappPairingCode);
     });
     serviceSupervisor.on('error-code', errorCode => {
       if (typeof errorCode === 'string' && /^[A-Z0-9_]{1,48}$/.test(errorCode)) lastWhatsAppServiceErrorCode = errorCode;

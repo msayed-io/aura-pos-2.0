@@ -26,7 +26,7 @@ export const localStoreClient = {
   async call<T>(action: string, payload: Record<string, unknown> = {}): Promise<T> {
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 45000);
-    const mayMutate = !['bootstrap', 'orders.list', 'menu.get', 'inventory.get', 'coupons.list', 'coupons.logs', 'coupons.validate'].includes(action);
+    const mayMutate = !['bootstrap', 'orders.list', 'menu.get', 'inventory.get', 'coupons.list', 'coupons.logs', 'coupons.validate', 'whatsapp.agent.settings.get', 'whatsapp.agent.personality.get', 'whatsapp.conversation.list'].includes(action);
     try {
       const response = await fetch('/api/local-store', {
         method: 'POST', credentials: 'same-origin', signal: controller.signal,

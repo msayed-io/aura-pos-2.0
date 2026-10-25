@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   Bot, QrCode, Wifi, WifiOff, MessageSquare, Zap, Upload, ChevronDown,
   AlertCircle, Phone, Clock, Settings, Search, Sparkles, ArrowRight, Save, Plus,
@@ -8,17 +8,18 @@ import {
 import { QRCodeSVG } from 'qrcode.react';
 import { localStoreClient } from '@/aura/services/localStoreClient';
 
-type ConnectionState = 'idle' | 'connecting' | 'qr' | 'connected' | 'reconnecting' | 'needs-attention' | 'paused' | 'stopping' | 'stopped';
+type ConnectionState = 'idle' | 'connecting' | 'qr' | 'pairing' | 'connected' | 'reconnecting' | 'needs-attention' | 'paused' | 'stopping' | 'stopped';
 
 const inputClass = 'w-full px-4 py-3 border border-gray-200 rounded-lg bg-white text-neo-secondary text-base disabled:cursor-not-allowed disabled:bg-gray-50';
 const buttonClass = 'flex items-center justify-center gap-2 px-4 py-3 bg-neo-primary text-white font-semibold rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]';
 const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const unavailable = 'غير متاح حتى إضافة المحرك المحلي';
-const AGENT_CONSENT_TEXT = 'هذه الخدمة تعتمد على ربط غير رسمي مع واتساب (WhatsApp Web) وليست منتجاً رسمياً من واتساب أو Meta، وقد يؤدي مخالفة شروط واتساب إلى تقييد الرقم المرتبط أو تعطيله، لذا يُنصح باستخدام رقم مخصص للمطعم. كما تُرسَل نصوص رسائل العملاء إلى خادم الذكاء الاصطناعي الخاص بنا ومزوّد النموذج لمعالجتها. باستمرارك فأنت تقرّ بفهم ذلك وتتحمل مسؤولية الاستخدام.';
+const AGENT_CONSENT_TEXT = 'الربط مع WhatsApp غير رسمي وليس منتجاً من Meta، وقد يؤدي الاستخدام إلى تقييد الرقم المرتبط. عند استخدام مفتاح Gemini المحلي، تُرسل Google نصوص الرسائل وسياق المسودة ولقطة من المنيو والأسعار لمعالجة الطلب؛ وقد تستخدم Google بيانات الطبقة المجانية لتحسين منتجاتها. لا تختبر ببيانات عملاء حقيقية. يحجب التطبيق أرقام الهاتف ومعرّفات WhatsApp والبريد المعروفة، لكن قد يبقى الاسم أو العنوان الذي يكتبه العميل داخل نص الرسالة. لا ينشئ التطبيق طلباً أو يطبعه قبل تأكيد العميل الصريح.';
 const connectionLabels: Record<ConnectionState, string> = {
   idle: 'غير متصل — الخدمة جاهزة لبدء الربط',
   connecting: 'جارٍ الاتصال بخوادم WhatsApp',
   qr: 'بانتظار مسح رمز QR',
+  pairing: 'بانتظار إدخال كود الاقتران',
   connected: 'متصل بـWhatsApp',
   reconnecting: 'انقطع الاتصال — جارٍ إعادة المحاولة',
   'needs-attention': 'يحتاج الربط إلى تدخل',
@@ -28,18 +29,20 @@ const connectionLabels: Record<ConnectionState, string> = {
 };
 
 const AgentInfoNotice = () => (
-  <div role="status" className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
+    <div role="status" className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
     <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
     <div>
-      <p className="text-sm font-semibold text-amber-800">الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك</p>
+      <p className="text-sm font-semibold text-amber-800">الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك</p>
       <p className="text-xs text-amber-700 mt-1">
-        تُحفظ جلسة WhatsApp والطلبات محلياً. لا يُرسل رد آلي ولا يُنشأ طلب قبل تفعيلك، ولا يُعتمد الطلب أو يطبع إلا بعد تأكيد صريح من العميل.
+        بيانات الاختبار المجانية قد تُستخدم لتحسين منتجات Google؛ استخدم رسائل ومنيو تجريبيين. لا يُنشأ طلب أو يطبع قبل تأكيد صريح من العميل.
       </p>
     </div>
   </div>
 );
 
 type AgentSettings = { enabled: boolean; consentVersion: string | null; consentAcceptedAt: number | null; gatewayConfigured: boolean };
+type AgentPersonality = { botName: string; businessName: string; tone: 'friendly' | 'professional' | 'concise'; replyLength: 'short' | 'medium' | 'long'; instructions: string; useEmoji: boolean };
+const DEFAULT_PERSONALITY: AgentPersonality = { botName: 'مساعد Aura POS', businessName: '', tone: 'friendly', replyLength: 'short', instructions: '', useEmoji: false };
 type AgentConversation = {
   conversationId: string; state: 'active' | 'needs_staff'; timestamp: number;
   draft: { status: string; version: number; itemCount: number; total: number; deliveryFeePending?: boolean } | null;
@@ -76,7 +79,11 @@ const BotAIPage: React.FC = () => {
   const [view, setView] = useState<'overview' | 'personality'>('overview');
   const [connectionTab, setConnectionTab] = useState<'qr' | 'pairing'>('qr');
   const [connectionStatus, setConnectionStatus] = useState<ConnectionState>('idle');
+  const connectionStatusRef = useRef<ConnectionState>('idle');
   const [qrPayload, setQrPayload] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [pairingRequestPending, setPairingRequestPending] = useState(false);
+  const [pairingPhone, setPairingPhone] = useState('');
   const [connectionBusy, setConnectionBusy] = useState(false);
   const [connectionError, setConnectionError] = useState('');
   const [businessHoursExpanded, setBusinessHoursExpanded] = useState(false);
@@ -86,6 +93,16 @@ const BotAIPage: React.FC = () => {
   const [consentAcknowledged, setConsentAcknowledged] = useState(false);
   const [agentBusy, setAgentBusy] = useState(false);
   const [agentError, setAgentError] = useState('');
+  const [personality, setPersonality] = useState<AgentPersonality>(DEFAULT_PERSONALITY);
+  const [personalityBusy, setPersonalityBusy] = useState(false);
+  const [personalitySaved, setPersonalitySaved] = useState(false);
+  const [personalityError, setPersonalityError] = useState('');
+  const [geminiKeyInput, setGeminiKeyInput] = useState('');
+  const [geminiKeyConfigured, setGeminiKeyConfigured] = useState(false);
+  const [geminiEncryptionAvailable, setGeminiEncryptionAvailable] = useState(false);
+  const [geminiBusy, setGeminiBusy] = useState(false);
+  const [geminiTestStatus, setGeminiTestStatus] = useState<'idle' | 'success' | 'failed'>('idle');
+  const [geminiError, setGeminiError] = useState('');
   const [conversations, setConversations] = useState<AgentConversation[]>([]);
   const [conversationBusy, setConversationBusy] = useState('');
 
@@ -94,30 +111,51 @@ const BotAIPage: React.FC = () => {
     let active = true;
     const unsubscribeStatus = api?.onWhatsAppStatus(payload => {
       if (!active) return;
+      connectionStatusRef.current = payload.state;
       setConnectionStatus(payload.state);
       if (payload.state !== 'qr') setQrPayload(null);
+      if (payload.state !== 'pairing') {
+        setPairingCode(null);
+        if (payload.state !== 'connecting') setPairingRequestPending(false);
+      }
     });
     const unsubscribeQr = api?.onWhatsAppQr(payload => { if (active) setQrPayload(payload); });
+    const unsubscribePairingCode = api?.onWhatsAppPairingCode(payload => {
+      if (!active) return;
+      setPairingCode(payload);
+      if (payload !== null || connectionStatusRef.current === 'pairing') setPairingRequestPending(false);
+    });
     if (api) {
       void api.getWhatsAppStatus().then(snapshot => {
         if (!active) return;
+        connectionStatusRef.current = snapshot.state;
         setConnectionStatus(snapshot.state);
         setQrPayload(snapshot.state === 'qr' ? snapshot.qr : null);
+        setPairingCode(snapshot.state === 'pairing' ? snapshot.pairingCode : null);
       }).catch(() => { if (active) setConnectionError('تعذر قراءة حالة الاتصال من التطبيق.'); });
+      void api.getGeminiKeyStatus().then(status => {
+        if (!active) return;
+        setGeminiKeyConfigured(status.configured);
+        setGeminiEncryptionAvailable(status.encryptionAvailable);
+        if (!status.encryptionAvailable) setGeminiError('التخزين المشفر غير متاح على هذا الجهاز.');
+      }).catch(() => { if (active) setGeminiError('تعذر قراءة حالة إعداد Gemini من التطبيق.'); });
     }
     void Promise.all([
       localStoreClient.call<AgentSettings>('whatsapp.agent.settings.get'),
       localStoreClient.call<AgentConversation[]>('whatsapp.conversation.list'),
-    ]).then(([settings, rows]) => {
+      localStoreClient.call<AgentPersonality>('whatsapp.agent.personality.get'),
+    ]).then(([settings, rows, savedPersonality]) => {
       if (!active) return;
       setAgentSettings(settings);
-      setConsentAcknowledged(settings.consentVersion === '1' && Boolean(settings.consentAcceptedAt));
+      setConsentAcknowledged(settings.consentVersion === '2' && Boolean(settings.consentAcceptedAt));
       setConversations(rows);
+      setPersonality(savedPersonality);
     }).catch(() => { if (active) setAgentError('تعذر قراءة إعدادات الوكيل من قاعدة البيانات المحلية.'); });
     return () => {
       active = false;
       unsubscribeStatus?.();
       unsubscribeQr?.();
+      unsubscribePairingCode?.();
     };
   }, []);
 
@@ -141,6 +179,7 @@ const BotAIPage: React.FC = () => {
     const api = window.electronAPI;
     if (!api) return;
     setConnectionBusy(true);
+    setPairingRequestPending(false);
     setConnectionError('');
     try {
       const accepted = await api.disconnectWhatsApp();
@@ -152,13 +191,117 @@ const BotAIPage: React.FC = () => {
     }
   };
 
+  const startPairing = async () => {
+    const api = window.electronAPI;
+    if (!api) { setConnectionError('يتطلب ربط WhatsApp تشغيل تطبيق Aura POS لسطح المكتب.'); return; }
+    if (!/^[1-9][0-9]{7,14}$/.test(pairingPhone)) {
+      setConnectionError('اكتب رقمًا دوليًا مع رمز الدولة، أرقامًا فقط ومن دون + أو مسافات.');
+      return;
+    }
+    setConnectionBusy(true);
+    setConnectionError('');
+    setPairingCode(null);
+    setPairingRequestPending(true);
+    try {
+      const accepted = await api.pairWhatsApp(pairingPhone);
+      if (!accepted) {
+        setPairingRequestPending(false);
+        setConnectionError('تعذر بدء الاقتران الآن. افصل الجلسة الحالية أو انتظر انتهاء إعادة الاتصال ثم حاول مجددًا.');
+      }
+    } catch {
+      setPairingRequestPending(false);
+      setConnectionError('تعذر بدء الاقتران المحلي. راجع الرقم وحالة اتصال الإنترنت ثم أعد المحاولة.');
+    } finally {
+      setConnectionBusy(false);
+    }
+  };
+
+  const updatePersonality = (value: Partial<AgentPersonality>) => {
+    setPersonality(current => ({ ...current, ...value }));
+    setPersonalitySaved(false);
+    setPersonalityError('');
+  };
+
+  const savePersonality = async () => {
+    setPersonalityBusy(true);
+    setPersonalitySaved(false);
+    setPersonalityError('');
+    try {
+      const saved = await localStoreClient.call<AgentPersonality>('whatsapp.agent.personality.set', personality as unknown as Record<string, unknown>);
+      setPersonality(saved);
+      setPersonalitySaved(true);
+    } catch {
+      setPersonalityError('تعذر حفظ الشخصية محلياً. أوقف الوكيل أولاً وتحقق من أطوال الحقول.');
+    } finally {
+      setPersonalityBusy(false);
+    }
+  };
+
+  const refreshAgentSettings = async () => {
+    const settings = await localStoreClient.call<AgentSettings>('whatsapp.agent.settings.get');
+    setAgentSettings(settings);
+  };
+
+  const saveGeminiKey = async () => {
+    const api = window.electronAPI;
+    if (!api) { setGeminiError('حفظ المفتاح متاح في تطبيق سطح المكتب فقط.'); return; }
+    if (!geminiKeyInput.trim()) { setGeminiError('اكتب مفتاح Gemini أولاً.'); return; }
+    setGeminiBusy(true);
+    setGeminiError('');
+    setGeminiTestStatus('idle');
+    try {
+      const saved = await api.saveGeminiApiKey(geminiKeyInput.trim());
+      setGeminiKeyInput('');
+      setGeminiKeyConfigured(saved.configured);
+      await refreshAgentSettings();
+    } catch {
+      setGeminiError('تعذر حفظ المفتاح. تأكد من نسخ مفتاح API الصحيح ومن توفر التخزين المشفر على هذا الجهاز.');
+    } finally {
+      setGeminiBusy(false);
+    }
+  };
+
+  const clearGeminiKey = async () => {
+    const api = window.electronAPI;
+    if (!api || !window.confirm('سيُحذف مفتاح Gemini المشفّر من هذا الجهاز. هل تريد المتابعة؟')) return;
+    setGeminiBusy(true);
+    setGeminiError('');
+    setGeminiTestStatus('idle');
+    try {
+      await api.clearGeminiApiKey();
+      setGeminiKeyConfigured(false);
+      setGeminiKeyInput('');
+      await refreshAgentSettings();
+    } catch {
+      setGeminiError('تعذر حذف المفتاح. أوقف الوكيل أولاً ثم حاول مرة أخرى.');
+    } finally {
+      setGeminiBusy(false);
+    }
+  };
+
+  const testGeminiKey = async () => {
+    const api = window.electronAPI;
+    if (!api) { setGeminiError('اختبار Gemini متاح في تطبيق سطح المكتب فقط.'); return; }
+    setGeminiBusy(true);
+    setGeminiError('');
+    setGeminiTestStatus('idle');
+    try {
+      const result = await api.testGeminiApiKey();
+      setGeminiTestStatus(result.ok ? 'success' : 'failed');
+    } catch {
+      setGeminiTestStatus('failed');
+    } finally {
+      setGeminiBusy(false);
+    }
+  };
+
   const setAgentEnabled = async (enabled: boolean) => {
     if (enabled && !consentAcknowledged) {
       setAgentError('اقرأ إشعار الخصوصية ووافق عليه أولاً.');
       return;
     }
     if (enabled && !agentSettings.gatewayConfigured) {
-      setAgentError('بوابة الذكاء الاصطناعي غير مهيأة؛ لم يتم تفعيل الوكيل.');
+      setAgentError('لم يتم حفظ مفتاح Gemini أو تهيئة Gateway؛ لم يتم تفعيل الوكيل.');
       return;
     }
     if (enabled && !agentSettings.consentAcceptedAt && !window.confirm(AGENT_CONSENT_TEXT)) {
@@ -170,7 +313,7 @@ const BotAIPage: React.FC = () => {
     try {
       const updated = await localStoreClient.call<AgentSettings>('whatsapp.agent.settings.set', {
         enabled,
-        ...(enabled ? { consentVersion: '1' } : {}),
+        ...(enabled ? { consentVersion: '2' } : {}),
       });
       setAgentSettings(current => ({ ...current, ...updated }));
       if (enabled) setConsentAcknowledged(true);
@@ -213,39 +356,42 @@ const BotAIPage: React.FC = () => {
         </div>
         <AgentInfoNotice />
         <SectionCard title="المعلومات الأساسية" icon={<Bot className="w-5 h-5 text-neo-primary" />}>
-          <InactiveControls>
+          <fieldset disabled={agentSettings.enabled || personalityBusy} className="min-w-0 m-0 p-0 border-0 space-y-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <label className="block text-sm font-semibold text-neo-secondary/80">اسم البوت
-                <input type="text" placeholder="مساعد أورا" className={`${inputClass} mt-1.5`} />
+                <input type="text" maxLength={80} value={personality.botName} onChange={event => updatePersonality({ botName: event.target.value })} className={`${inputClass} mt-1.5`} />
               </label>
               <label className="block text-sm font-semibold text-neo-secondary/80">اسم النشاط التجاري
-                <input type="text" placeholder="مطعم أورا" className={`${inputClass} mt-1.5`} />
+                <input type="text" maxLength={100} value={personality.businessName} onChange={event => updatePersonality({ businessName: event.target.value })} className={`${inputClass} mt-1.5`} />
               </label>
             </div>
-          </InactiveControls>
+          </fieldset>
         </SectionCard>
         <SectionCard title="تعليمات التشغيل" icon={<Zap className="w-5 h-5 text-neo-primary" />}>
-          <InactiveControls>
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-xs text-neo-secondary/50">التعليمات الأساسية التي تحدد سلوك البوت وشخصيته</p>
-              <button type="button" disabled className={buttonClass}><Sparkles className="w-4 h-4" />توليد تلقائي</button>
-            </div>
-            <textarea aria-label="تعليمات التشغيل" placeholder="اكتب تعليمات تشغيل البوت هنا..." rows={8} className={inputClass} />
-          </InactiveControls>
+          <p className="text-xs text-neo-secondary/60 mb-3">تفضيلات أسلوبية فقط؛ لا يمكنها إلغاء تأكيد العميل أو قواعد الأسعار والطلبات. بحد أقصى 2000 حرف.</p>
+          <textarea aria-label="تعليمات التشغيل" value={personality.instructions} maxLength={2000} onChange={event => updatePersonality({ instructions: event.target.value })} placeholder="مثال: استخدم لهجة ودودة، وأجب باختصار..." rows={6} disabled={agentSettings.enabled || personalityBusy} className={inputClass} />
         </SectionCard>
         <SectionCard title="إعدادات الرد" icon={<MessageSquare className="w-5 h-5 text-neo-primary" />}>
-          <InactiveControls>
-            <InactiveToggle label="استخدام الإيموجي في الردود" />
+          <fieldset disabled={agentSettings.enabled || personalityBusy} className="min-w-0 m-0 p-0 border-0 space-y-4">
+            <label className="flex items-center justify-between gap-3 text-sm font-semibold text-neo-secondary">
+              <span>استخدام الإيموجي باعتدال</span>
+              <input type="checkbox" checked={personality.useEmoji} onChange={event => updatePersonality({ useEmoji: event.target.checked })} className="h-5 w-5 accent-neo-primary" />
+            </label>
+            <label className="block text-sm font-semibold text-neo-secondary/80">نبرة الرد
+              <select value={personality.tone} onChange={event => updatePersonality({ tone: event.target.value as AgentPersonality['tone'] })} className={`${inputClass} mt-1.5`}>
+                <option value="friendly">ودودة</option><option value="professional">مهنية</option><option value="concise">مباشرة ومختصرة</option>
+              </select>
+            </label>
             <div>
               <p className="text-sm font-semibold text-neo-secondary/80 mb-2">طول الرد</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                {['قصير', 'متوسط', 'طويل', 'تلقائي'].map(label => (
-                  <button type="button" key={label} disabled className="px-4 py-2.5 rounded-lg text-sm font-semibold border-2 border-gray-200 text-neo-secondary/60 disabled:cursor-not-allowed">{label}</button>
+              <div className="grid grid-cols-3 gap-2">
+                {([{ value: 'short', label: 'قصير' }, { value: 'medium', label: 'متوسط' }, { value: 'long', label: 'طويل' }] as const).map(option => (
+                  <button type="button" key={option.value} onClick={() => updatePersonality({ replyLength: option.value })} aria-pressed={personality.replyLength === option.value}
+                    className={`px-4 py-2.5 rounded-lg text-sm font-semibold border-2 ${personality.replyLength === option.value ? 'border-neo-primary bg-neo-primary/5 text-neo-primary' : 'border-gray-200 text-neo-secondary/70'}`}>{option.label}</button>
                 ))}
               </div>
-              <p className="text-xs text-neo-secondary/40 mt-1.5">يحدد مدى تفصيل ردود البوت — غير متاح حالياً</p>
             </div>
-          </InactiveControls>
+          </fieldset>
         </SectionCard>
         <SectionCard title="قاعدة المعرفة" icon={<Search className="w-5 h-5 text-neo-primary" />}>
           <InactiveControls>
@@ -273,9 +419,12 @@ const BotAIPage: React.FC = () => {
           <p className="text-sm text-neo-secondary/40 text-center py-6 mt-2">لا توجد قاعدة معرفة موصولة حالياً.</p>
         </SectionCard>
         <div className="flex items-center gap-3 pt-2">
-          <button type="button" disabled title={unavailable} className={buttonClass}><Save className="w-4 h-4" />حفظ الإعدادات</button>
+          <button type="button" onClick={() => { void savePersonality(); }} disabled={personalityBusy || agentSettings.enabled} className={buttonClass}><Save className="w-4 h-4" />{personalityBusy ? 'جارٍ الحفظ…' : 'حفظ الشخصية'}</button>
           <button type="button" onClick={() => setView('overview')} className="px-6 py-3 bg-gray-100 text-neo-secondary font-semibold rounded-lg text-sm">إلغاء</button>
         </div>
+        {personalitySaved && <p role="status" className="text-sm text-green-700">تم حفظ الشخصية على هذا الجهاز.</p>}
+        {agentSettings.enabled && <p className="text-sm text-amber-700">أوقف الوكيل قبل تعديل الشخصية.</p>}
+        {personalityError && <p role="alert" className="text-sm text-red-600">{personalityError}</p>}
       </div>
     );
   }
@@ -297,7 +446,7 @@ const BotAIPage: React.FC = () => {
           <button type="button" onClick={() => setView('personality')} className="text-xs font-semibold text-neo-primary px-3 py-1.5 rounded-lg hover:bg-neo-primary/5">تعديل</button>
         </div>
         <div className="flex flex-wrap items-center gap-5 mt-4 pt-3 border-t border-gray-100 text-xs text-neo-secondary/40">
-          <span>اسم البوت: لم يحدد</span><span>النشاط التجاري: لم يحدد</span><span>قاعدة المعرفة: غير موصولة</span>
+          <span>اسم البوت: {personality.botName || 'لم يحدد'}</span><span>النشاط التجاري: {personality.businessName || 'لم يحدد'}</span><span>قاعدة المعرفة: غير موصولة</span>
         </div>
       </section>
       <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -333,11 +482,11 @@ const BotAIPage: React.FC = () => {
               {connectionError && <p role="alert" className="text-sm text-red-600 mb-4">{connectionError}</p>}
               <div className="flex flex-wrap justify-center gap-3">
                 <button type="button" onClick={startWhatsApp}
-                  disabled={!window.electronAPI || connectionBusy || ['connecting', 'qr', 'connected', 'reconnecting'].includes(connectionStatus)}
+                  disabled={!window.electronAPI || connectionBusy || ['connecting', 'qr', 'pairing', 'connected', 'reconnecting'].includes(connectionStatus)}
                   title={!window.electronAPI ? 'يتطلب تطبيق Aura POS لسطح المكتب' : undefined} className={buttonClass}>
                   <QrCode className="w-5 h-5" />{connectionBusy ? 'جارٍ تنفيذ الطلب…' : connectionStatus === 'needs-attention' || connectionStatus === 'stopped' ? 'إعادة المحاولة' : 'بدء الربط'}
                 </button>
-                {['connected', 'qr', 'connecting', 'reconnecting', 'needs-attention'].includes(connectionStatus) && (
+                {['connected', 'qr', 'pairing', 'connecting', 'reconnecting', 'needs-attention'].includes(connectionStatus) && (
                   <button type="button" onClick={() => { void disconnectWhatsApp(); }} disabled={connectionBusy}
                     className="flex items-center justify-center gap-2 px-4 py-3 border border-red-200 text-red-600 font-semibold rounded-lg text-sm disabled:opacity-50 min-h-[44px]">
                     فصل الربط
@@ -347,19 +496,50 @@ const BotAIPage: React.FC = () => {
               <p className="mt-4 text-xs text-neo-secondary/50">جلسة الربط محفوظة محلياً. فصل الربط يمسحها ويتطلب مسح QR جديداً.</p>
             </div>
           ) : (
-            <InactiveControls>
-              <label className="block text-sm font-semibold text-neo-secondary/80">معرف المستخدم (WhatsApp User ID)
-                <input type="text" placeholder="غير متاح حالياً" dir="ltr" className={`${inputClass} mt-1.5`} />
+            <div className="space-y-4">
+              <label className="block text-sm font-semibold text-neo-secondary/80">رقم الهاتف مع رمز الدولة
+                <input type="tel" inputMode="numeric" autoComplete="tel" placeholder="201012345678" dir="ltr" maxLength={15} value={pairingPhone} onChange={event => setPairingPhone(event.target.value)} className={`${inputClass} mt-1.5`} />
               </label>
-              <label className="block text-sm font-semibold text-neo-secondary/80">رقم الهاتف (مع رمز الدولة)
-                <input type="tel" placeholder="201012345678" dir="ltr" className={`${inputClass} mt-1.5`} />
-              </label>
-              <button type="button" disabled className={buttonClass}>توليد</button>
-              <div className="bg-gray-50 rounded-xl p-5 text-center border border-gray-100">
-                <Phone className="w-8 h-8 mx-auto text-gray-300 mb-3" /><p className="text-sm text-neo-secondary/40">توليد كود الاقتران غير متاح حالياً</p>
+              <p className="text-xs text-neo-secondary/60">اكتب الرقم الدولي بأرقام فقط، دون علامة + أو مسافات. مثال مصر: 201012345678.</p>
+              {connectionError && <p role="alert" className="text-sm text-red-600">{connectionError}</p>}
+              <div className="text-center rounded-xl border border-gray-200 bg-gray-50 p-5">
+                {connectionStatus === 'pairing' && pairingCode ? (
+                  <>
+                    <p className="text-sm text-neo-secondary/70 mb-2">أدخل هذا الرمز في WhatsApp على الهاتف المرتبط بهذا الرقم:</p>
+                    <p dir="ltr" className="text-3xl tracking-[0.35em] font-bold text-neo-primary" aria-label="كود اقتران WhatsApp" role="status">{pairingCode}</p>
+                    <p className="text-xs text-neo-secondary/60 mt-3">افتح الأجهزة المرتبطة واختر الربط برقم الهاتف. يخفي التطبيق الرمز بعد 30 ثانية لتجنب عرض رمز قديم؛ أدخله فوراً لأن WhatsApp قد يرفضه قبل ذلك.</p>
+                  </>
+                ) : (
+                  <>
+                    <Phone className="w-8 h-8 mx-auto text-gray-400 mb-3" />
+                    <p className="text-sm font-semibold text-neo-secondary">{connectionStatus === 'pairing' ? pairingRequestPending ? 'جارٍ طلب كود الاقتران من WhatsApp…' : 'اختفى الرمز أو لم يظهر؛ يمكنك طلب رمز جديد.' : connectionStatus === 'connected' ? 'هذا الجهاز مرتبط بالفعل.' : 'أدخل رقم الهاتف ثم اطلب كود الاقتران.'}</p>
+                  </>
+                )}
               </div>
-            </InactiveControls>
+              <button type="button" onClick={() => { void startPairing(); }} disabled={!window.electronAPI || connectionBusy || pairingRequestPending || !(['idle', 'needs-attention', 'stopped'].includes(connectionStatus) || (connectionStatus === 'pairing' && !pairingCode))} className={buttonClass}>
+                <Phone className="w-4 h-4" />{connectionBusy || pairingRequestPending ? 'جارٍ طلب الكود…' : connectionStatus === 'pairing' ? 'طلب رمز جديد' : 'توليد كود الاقتران'}
+              </button>
+            </div>
           )}
+        </div>
+      </section>
+      <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="p-5 border-b border-gray-100 flex items-center gap-3"><Sparkles className="w-5 h-5 text-neo-primary" /><h2 className="text-base font-bold text-neo-secondary">مفتاح Gemini المحلي — اختبار</h2></div>
+        <div className="p-5 space-y-4">
+          <p className="text-xs leading-6 text-neo-secondary/70">أدخل مفتاح Google AI Studio الخاص بك. يُحفظ محلياً مشفراً بنظام Windows، ولا يُعرض بعد الحفظ ولا يُكتب في السجلات أو إعدادات التطبيق. النموذج المختار: <span dir="ltr" className="font-semibold">Gemini 3.8 Flash</span>.</p>
+          <label className="block text-sm font-semibold text-neo-secondary/80">مفتاح Gemini API
+            <input type="password" autoComplete="off" spellCheck={false} value={geminiKeyInput} onChange={event => { setGeminiKeyInput(event.target.value); setGeminiTestStatus('idle'); setGeminiError(''); }} disabled={!window.electronAPI || !geminiEncryptionAvailable || geminiBusy || agentSettings.enabled} placeholder={geminiKeyConfigured ? 'مفتاح محفوظ — اكتب قيمة جديدة للاستبدال' : 'ألصق مفتاح API هنا'} dir="ltr" className={`${inputClass} mt-1.5 font-mono`} />
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={() => { void saveGeminiKey(); }} disabled={!window.electronAPI || !geminiEncryptionAvailable || geminiBusy || agentSettings.enabled || !geminiKeyInput.trim()} className={buttonClass}>{geminiBusy ? 'جارٍ التنفيذ…' : 'حفظ المفتاح محلياً'}</button>
+            <button type="button" onClick={() => { void testGeminiKey(); }} disabled={!window.electronAPI || !geminiKeyConfigured || geminiBusy || agentSettings.enabled} className="px-4 py-3 border border-gray-200 text-neo-secondary font-semibold rounded-lg text-sm disabled:opacity-50">اختبار الاتصال (طلب تجريبي)</button>
+            <button type="button" onClick={() => { void clearGeminiKey(); }} disabled={!window.electronAPI || !geminiKeyConfigured || geminiBusy || agentSettings.enabled} className="px-4 py-3 border border-red-200 text-red-600 font-semibold rounded-lg text-sm disabled:opacity-50">حذف المفتاح</button>
+          </div>
+          <p className="text-xs text-neo-secondary/60">{geminiKeyConfigured ? 'يوجد مفتاح محفوظ مشفراً على هذا الجهاز؛ لن نعيد عرضه.' : 'لا يوجد مفتاح Gemini محفوظ على هذا الجهاز.'} {geminiEncryptionAvailable ? 'التخزين المشفر متاح.' : 'التخزين المشفر غير متاح؛ لن يمكن حفظ المفتاح بأمان.'}</p>
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">زر الاختبار يرسل مفتاح API في طلب HTTPS وطلباً اصطناعياً فقط إلى Google؛ لا يحتوي على رسالة عميل أو منيو. عند تشغيل الوكيل تُرسل نصوص رسائل WhatsApp وسياق الطلب والمنيو والأسعار إلى Google؛ يحجب التطبيق أرقام الهاتف ومعرّفات WhatsApp والبريد المعروفة، لكن قد تبقى أسماء أو عناوين يذكرها العميل داخل النص. قد تستخدم Google بيانات الطبقة المجانية لتحسين منتجاتها؛ استخدم بيانات وهمية للاختبار.</p>
+          {geminiTestStatus === 'success' && <p role="status" className="text-sm text-green-700">نجح الاتصال بالنموذج المحدد.</p>}
+          {geminiTestStatus === 'failed' && <p role="status" className="text-sm text-red-600">فشل الاختبار. راجع صلاحية المفتاح واتصال الإنترنت أو حد الاستخدام.</p>}
+          {geminiError && <p role="alert" className="text-sm text-red-600">{geminiError}</p>}
         </div>
       </section>
       <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
@@ -380,15 +560,15 @@ const BotAIPage: React.FC = () => {
               )}
             </div>
             <p className="text-xs text-neo-secondary/70 leading-6">
-              عند التفعيل قد تُرسل نصوص الرسائل وسياق المسودة ولقطة من المنيو تشمل الأسعار والتوفر إلى Gateway خارجية تستخدم Gemini. تُحجب أرقام الهواتف ومعرّفات WhatsApp، وقد تتضمن الرسائل عناوين أو معلومات شخصية أخرى. لا يُعتمد على أي سعر يخرجه النموذج؛ يُحسب الملخص من قاعدة البيانات المحلية ولا يُنشأ أو يُطبع طلب قبل تأكيد العميل الصريح.
+              عند التفعيل تُرسل Google نص الرسائل وسياق المسودة ولقطة من المنيو تشمل الأسعار والتوفر عبر مفتاح Gemini المحلي؛ وإذا لم يوجد مفتاح محلي فقد تُرسل إلى Gateway المهيأة. تُحجب أرقام الهواتف ومعرّفات WhatsApp، لكن قد تتضمن الرسائل عناوين أو معلومات شخصية أخرى. قد تستخدم Google بيانات الطبقة المجانية لتحسين منتجاتها، لذا اختبر ببيانات وهمية. الأسعار والإجمالي تُحسب محلياً، ولا يُنشأ أو يُطبع طلب قبل تأكيد العميل الصريح.
             </p>
             <label className="flex items-start gap-3 text-sm text-neo-secondary cursor-pointer">
               <input type="checkbox" className="mt-1 h-4 w-4 accent-neo-primary" checked={consentAcknowledged}
                 onChange={event => setConsentAcknowledged(event.target.checked)} disabled={agentSettings.enabled || agentBusy} />
-              <span>أوافق على إرسال محتوى الرسائل اللازمة إلى بوابة الذكاء الاصطناعي لمعالجة الطلبات، بعد الاطلاع على التنبيه أعلاه.</span>
+              <span>أوافق على إرسال المحتوى الضروري إلى Google Gemini أو Gateway المهيأة لمعالجة الطلبات، بعد الاطلاع على التنبيه أعلاه.</span>
             </label>
             <p className="text-xs text-neo-secondary/60" role="status">
-              حالة Gateway: {agentSettings.gatewayConfigured ? 'الإعداد موجود' : 'غير مهيأ — لن يُفعّل الوكيل'}
+              حالة إعداد الذكاء الاصطناعي: {agentSettings.gatewayConfigured ? 'الإعداد موجود' : 'غير مهيأ — لن يُفعّل الوكيل'}
             </p>
             {agentError && <p role="alert" className="text-sm text-red-600">{agentError}</p>}
           </div>

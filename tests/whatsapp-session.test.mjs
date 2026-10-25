@@ -15,7 +15,7 @@ const { OutboundReplyQueue, isDirectJid, extractPlainText, validReply, replyMess
 const { DisconnectReason } = runtimeRequire('@whiskeysockets/baileys');
 const tick = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
-async function makeHarness(t, { registered = false, authSequence, now = Date.now, backoffBaseMs = 1, saveCreds = async () => {} } = {}) {
+async function makeHarness(t, { registered = false, authSequence, now = Date.now, backoffBaseMs = 1, pairingCodeDisplayMs = 30000, saveCreds = async () => {}, useDefaultCredentialPersistence = false } = {}) {
   const sessionDir = await fs.mkdtemp(path.join(os.tmpdir(), 'aura-baileys-state-test-'));
   t.after(async () => { await fs.rm(sessionDir, { recursive: true, force: true }); });
   const sockets = [];
@@ -28,10 +28,21 @@ async function makeHarness(t, { registered = false, authSequence, now = Date.now
       optionsSeen.push(options);
       const socket = {
         ev: new EventEmitter(),
+        auth: options.auth,
         sent: [],
         presence: [],
         async sendPresenceUpdate(state, jid) { this.presence.push({ state, jid }); },
         async sendMessage(jid, content, options) { this.sent.push({ jid, content, options }); if (this.failSend) throw new Error('fixture failure'); return { key: { id: 'fixture-send' } }; },
+        async requestPairingCode(phoneNumber) {
+          this.requestedPairingPhone = phoneNumber;
+          this.pairingRequests = (this.pairingRequests || 0) + 1;
+          const code = this.pairingRequests === 1 ? 'ABCDEFGH' : 'CDEFGH23';
+          this.auth.creds.pairingCode = code;
+          this.auth.creds.me = { id: `${phoneNumber}@s.whatsapp.net`, name: '~' };
+          this.auth.creds.testBuffer = Buffer.from([1, 2, 3]);
+          this.ev.emit('creds.update', this.auth.creds);
+          return code;
+        },
         async logout() {},
         end() {},
       };
@@ -43,6 +54,8 @@ async function makeHarness(t, { registered = false, authSequence, now = Date.now
     random: () => 0,
     now,
     sleep: async () => {},
+    pairingCodeDisplayMs,
+    ...(useDefaultCredentialPersistence ? {} : { persistCredentials: auth => auth.saveCreds() }),
     backoffBaseMs,
     backoffMaxMs: backoffBaseMs,
     backoffJitter: 0,
@@ -89,7 +102,7 @@ const closeWith = (socket, statusCode) => socket.ev.emit('connection.update', {
   lastDisconnect: { error: { output: { statusCode } } },
 });
 
- test('unregistered local auth waits for a user start; a real Baileys open event is the only connected state', async t => {
+test('unregistered local auth waits for a user start; a real Baileys open event is the only connected state', async t => {
   const h = await makeHarness(t);
   const status = [];
   const qrs = [];
@@ -116,6 +129,50 @@ const closeWith = (socket, statusCode) => socket.ev.emit('connection.update', {
   assert.equal(qrs.at(-1), null);
   assert.ok(status.includes('qr') && status.includes('connected'));
   await h.manager.stop();
+});
+
+test('phone pairing waits for Baileys QR readiness, never persists the code, hides stale codes and allows renewal', async t => {
+  const h = await makeHarness(t, { pairingCodeDisplayMs: 20, useDefaultCredentialPersistence: true });
+  const codes = [];
+  const qrs = [];
+  h.manager.on('pairing-code', value => codes.push(value));
+  h.manager.on('qr', value => qrs.push(value));
+  assert.equal(await h.manager.initialize(), true);
+  assert.equal(await h.manager.connectWithPairing('201012345678'), true);
+  assert.equal(h.manager.state, 'connecting');
+  const socket = h.sockets[0];
+  socket.ev.emit('connection.update', { connection: 'connecting', qr: 'must-not-be-shown-in-phone-mode' });
+  await tick(0);
+  assert.equal(h.manager.state, 'pairing');
+  assert.equal(socket.requestedPairingPhone, '201012345678');
+  assert.equal(socket.pairingRequests, 1);
+  assert.equal(codes.at(-1), 'ABCDEFGH');
+  await h.manager.authSaveQueue;
+  const savedCredentials = JSON.parse(await fs.readFile(path.join(h.sessionDir, 'creds.json'), 'utf8'));
+  assert.equal(savedCredentials.pairingCode, undefined);
+  assert.deepEqual(savedCredentials.testBuffer, { type: 'Buffer', data: 'AQID' });
+  assert.equal(h.manager.authState.state.creds.pairingCode, 'ABCDEFGH');
+  assert.equal(qrs.includes('must-not-be-shown-in-phone-mode'), false);
+  socket.ev.emit('connection.update', { qr: 'duplicate-qr-event' });
+  await tick(0);
+  assert.equal(socket.pairingRequests, 1);
+  await tick(35);
+  assert.equal(codes.at(-1), null);
+  assert.equal(h.manager.authState.state.creds.pairingCode, undefined);
+  assert.equal(h.manager.state, 'pairing');
+  assert.equal(await h.manager.connectWithPairing('201012345678'), true);
+  assert.equal(socket.pairingRequests, 2);
+  assert.equal(h.sockets.length, 1);
+  assert.equal(codes.at(-1), 'CDEFGH23');
+  await h.manager.authSaveQueue;
+  const renewedCredentials = JSON.parse(await fs.readFile(path.join(h.sessionDir, 'creds.json'), 'utf8'));
+  assert.equal(renewedCredentials.pairingCode, undefined);
+  assert.equal(renewedCredentials.me.id, '201012345678@s.whatsapp.net');
+  assert.equal(await h.manager.disconnect(), true);
+  assert.equal(h.manager.state, 'idle');
+  assert.equal(h.manager.pairingPhoneNumber, null);
+  assert.equal(codes.at(-1), null);
+  assert.equal(await h.manager.stop(), undefined);
 });
 
 test('logged-out sessions are cleared and replaced with a fresh QR session', async t => {

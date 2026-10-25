@@ -17,6 +17,8 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
   const storeCalls = [];
   const confirmCalls = [];
   let cursor = 0;
+  let refCursor = 0;
+  const refs = [];
   let effectsMounted = false;
   const React = {
     createElement(type, props, ...children) {
@@ -30,6 +32,11 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
       if (!(index in states)) states[index] = initial;
       return [states[index], value => { states[index] = typeof value === 'function' ? value(states[index]) : value; }];
     },
+    useRef(initial) {
+      const index = refCursor++;
+      if (!(index in refs)) refs[index] = { current: initial };
+      return refs[index];
+    },
     useEffect(effect) { if (!effectsMounted) effects.push(effect); },
   };
   const icons = Object.fromEntries(['Bot','QrCode','Wifi','WifiOff','MessageSquare','Zap','Upload','ChevronDown','AlertCircle','Phone','Clock','Settings','Search','Sparkles','ArrowRight','Save','Plus'].map(name => [name, name]));
@@ -39,8 +46,10 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
       storeCalls.push({ action, payload });
       if (Object.hasOwn(storeOverrides, action)) return storeOverrides[action];
       if (action === 'whatsapp.agent.settings.get') return defaultSettings;
-      if (action === 'whatsapp.agent.settings.set') return { ...(storeOverrides['whatsapp.agent.settings.get'] || defaultSettings), enabled: payload.enabled === true, consentVersion: payload.enabled ? '1' : null, consentAcceptedAt: payload.enabled ? Date.now() : null };
+      if (action === 'whatsapp.agent.settings.set') return { ...(storeOverrides['whatsapp.agent.settings.get'] || defaultSettings), enabled: payload.enabled === true, consentVersion: payload.enabled ? '2' : null, consentAcceptedAt: payload.enabled ? Date.now() : null };
       if (action === 'whatsapp.conversation.list') return [];
+      if (action === 'whatsapp.agent.personality.get') return { botName: 'مساعد Aura POS', businessName: '', tone: 'friendly', replyLength: 'short', instructions: '', useEmoji: false };
+      if (action === 'whatsapp.agent.personality.set') return payload;
       return true;
     },
     report: () => {},
@@ -58,6 +67,7 @@ function createHarness(electronAPI, storeOverrides = {}, confirmResult = true) {
   const Component = mod.exports.default;
   function render() {
     cursor = 0;
+    refCursor = 0;
     const tree = Component();
     if (!effectsMounted) {
       effectsMounted = true;
@@ -88,15 +98,15 @@ const click = (h, tree, label) => { const target = button(tree, label); assert.e
 test('actual UI navigates overview to personality and back; the local-agent notice persists in both views', () => {
   const h = createHarness();
   let tree = h.render();
-  assert.match(textOf(tree), /الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك/);
+  assert.match(textOf(tree), /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
   assert.match(textOf(tree), /غير متاح في المتصفح — استخدم تطبيق Aura POS لسطح المكتب/);
   assert.doesNotMatch(textOf(tree), /متصل بـWhatsApp/);
   tree = click(h, tree, 'تعديل');
   assert.match(textOf(tree), /شخصية البوت/);
-  assert.match(textOf(tree), /الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك/);
+  assert.match(textOf(tree), /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
   tree = click(h, tree, 'رجوع');
   assert.match(textOf(tree), /البوت والذكاء الاصطناعي/);
-  assert.match(textOf(tree), /الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك/);
+  assert.match(textOf(tree), /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
 });
 
 test('AI agent requires explicit consent and configured Gateway before enabling', async () => {
@@ -114,9 +124,10 @@ test('AI agent requires explicit consent and configured Gateway before enabling'
   assert.equal(button(tree, 'تفعيل الوكيل').props.disabled, false);
   button(tree, 'تفعيل الوكيل').props.onClick();
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(h.confirmCalls[0], 'هذه الخدمة تعتمد على ربط غير رسمي مع واتساب (WhatsApp Web) وليست منتجاً رسمياً من واتساب أو Meta، وقد يؤدي مخالفة شروط واتساب إلى تقييد الرقم المرتبط أو تعطيله، لذا يُنصح باستخدام رقم مخصص للمطعم. كما تُرسَل نصوص رسائل العملاء إلى خادم الذكاء الاصطناعي الخاص بنا ومزوّد النموذج لمعالجتها. باستمرارك فأنت تقرّ بفهم ذلك وتتحمل مسؤولية الاستخدام.');
+  assert.match(h.confirmCalls[0], /تُرسل Google/);
+  assert.match(h.confirmCalls[0], /بيانات الطبقة المجانية/);
   const saved = h.storeCalls.find(call => call.action === 'whatsapp.agent.settings.set');
-  assert.deepEqual(JSON.parse(JSON.stringify(saved?.payload)), { enabled: true, consentVersion: '1' });
+  assert.deepEqual(JSON.parse(JSON.stringify(saved?.payload)), { enabled: true, consentVersion: '2' });
 
   const declined = createHarness(undefined, {
     'whatsapp.agent.settings.get': { enabled: false, consentVersion: null, consentAcceptedAt: null, gatewayConfigured: true },
@@ -148,31 +159,69 @@ test('conversation controls use local opaque IDs and do not render phone/JID fie
   assert.ok(h.storeCalls.some(call => call.action === 'whatsapp.conversation.resume' && call.payload.conversationId === 'wac_opaque123456'));
 });
 
-test('QR tab offers the local connection flow without claiming a connection before Baileys reports open', () => {
-  const h = createHarness();
+test('phone pairing UI validates the international number, shows an ephemeral code and offers renewal after expiry', async () => {
+  let statusListener;
+  let pairingListener;
+  let requestedPhone = '';
+  let pairingRequests = 0;
+  const api = {
+    onWhatsAppStatus: callback => { statusListener = callback; return () => { statusListener = undefined; }; },
+    onWhatsAppQr: () => () => {},
+    onWhatsAppPairingCode: callback => { pairingListener = callback; return () => { pairingListener = undefined; }; },
+    getWhatsAppStatus: async () => ({ state: 'idle', qr: null, pairingCode: null }),
+    getGeminiKeyStatus: async () => ({ configured: false, encryptionAvailable: true }),
+    connectWhatsApp: async () => true,
+    pairWhatsApp: async phoneNumber => { requestedPhone = phoneNumber; pairingRequests += 1; return true; },
+    disconnectWhatsApp: async () => true,
+  };
+  const h = createHarness(api);
   let tree = h.render();
-  const qr = button(tree, 'رمز QR');
-  const phone = button(tree, 'رقم الهاتف');
-  assert.equal(qr.props['aria-pressed'], true);
-  assert.equal(phone.props['aria-pressed'], false);
-  assert.match(textOf(tree), /ابدأ الربط لطلب رمز QR من WhatsApp/);
-  assert.equal(button(tree, 'بدء الربط').props.disabled, true);
-  assert.doesNotMatch(textOf(tree), /رمز QR جاهز|تم الاتصال/);
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
   tree = click(h, tree, 'رقم الهاتف');
-  assert.equal(button(tree, 'رقم الهاتف').props['aria-pressed'], true);
-  assert.match(textOf(tree), /توليد كود الاقتران غير متاح حالياً/);
-  tree = click(h, tree, 'رمز QR');
-  assert.equal(button(tree, 'رمز QR').props['aria-pressed'], true);
+  const phoneInput = find(tree, node => node.type === 'input' && node.props.type === 'tel');
+  phoneInput.props.onChange({ target: { value: '+20 101 234 5678' } });
+  tree = h.render();
+  assert.equal(button(tree, 'توليد كود الاقتران').props.disabled, false);
+  button(tree, 'توليد كود الاقتران').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requestedPhone, '');
+  tree = h.render();
+  assert.match(textOf(tree), /اكتب رقمًا دوليًا/);
+  find(tree, node => node.type === 'input' && node.props.type === 'tel').props.onChange({ target: { value: '201012345678' } });
+  tree = h.render();
+  button(tree, 'توليد كود الاقتران').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requestedPhone, '201012345678');
+  statusListener({ state: 'pairing' });
+  pairingListener('ABCDEFGH');
+  tree = h.render();
+  assert.match(textOf(tree), /ABCDEFGH/);
+  assert.match(textOf(tree), /الأجهزة المرتبطة/);
+  pairingListener(null);
+  tree = h.render();
+  assert.match(textOf(tree), /اختفى الرمز أو لم يظهر/);
+  assert.equal(button(tree, 'طلب رمز جديد').props.disabled, false);
+  button(tree, 'طلب رمز جديد').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(pairingRequests, 2);
+  assert.equal(requestedPhone, '201012345678');
+  statusListener({ state: 'connected' });
+  tree = h.render();
+  assert.doesNotMatch(textOf(tree), /ABCDEFGH/);
 });
 
 test('real QR/status events render the local QR component, clear it on open, and expose explicit disconnect', async () => {
   let statusListener;
   let qrListener;
+  let pairingListener;
   let disconnectCalls = 0;
   const api = {
     onWhatsAppStatus: callback => { statusListener = callback; return () => { statusListener = undefined; }; },
     onWhatsAppQr: callback => { qrListener = callback; return () => { qrListener = undefined; }; },
-    getWhatsAppStatus: async () => ({ state: 'idle', qr: null }),
+    onWhatsAppPairingCode: callback => { pairingListener = callback; return () => { pairingListener = undefined; }; },
+    getWhatsAppStatus: async () => ({ state: 'idle', qr: null, pairingCode: null }),
+    getGeminiKeyStatus: async () => ({ configured: false, encryptionAvailable: true }),
     connectWhatsApp: async () => true,
     disconnectWhatsApp: async () => { disconnectCalls += 1; return true; },
   };
@@ -180,7 +229,7 @@ test('real QR/status events render the local QR component, clear it on open, and
   let tree = h.render();
   await Promise.resolve();
   tree = h.render();
-  assert.ok(statusListener && qrListener);
+  assert.ok(statusListener && qrListener && pairingListener);
   assert.equal(button(tree, 'بدء الربط').props.disabled, false);
   await button(tree, 'بدء الربط').props.onClick();
   statusListener({ state: 'qr' });
@@ -202,46 +251,51 @@ test('business hours, quick replies and manual knowledge expand while controls r
   const h = createHarness();
   let tree = click(h, h.render(), 'ساعات العمل');
   assert.equal(button(tree, 'ساعات العمل').props['aria-expanded'], true);
-  assert.ok(find(tree, node => node.type === 'input' && node.props.type === 'time'));
+  const requireDisabled = predicate => {
+    const item = flatten(tree).find(entry => entry.node && predicate(entry.node));
+    assert.ok(item, 'Expected control is missing');
+    assert.ok(item.node.props.disabled || item.ancestors.some(ancestor => ancestor.type === 'fieldset' && ancestor.props.disabled));
+  };
+  requireDisabled(node => node.type === 'input' && node.props.type === 'time');
   tree = click(h, tree, 'الردود السريعة');
   assert.equal(button(tree, 'الردود السريعة').props['aria-expanded'], true);
-  assert.ok(find(tree, node => node.type === 'input' && node.props['aria-label'] === 'الكلمة المفتاحية'));
+  requireDisabled(node => node.type === 'input' && node.props['aria-label'] === 'الكلمة المفتاحية');
   tree = click(h, tree, 'تعديل');
   tree = click(h, tree, 'إضافة معرفة يدوياً');
   assert.equal(button(tree, 'إضافة معرفة يدوياً').props['aria-expanded'], true);
-  assert.ok(find(tree, node => node.type === 'textarea' && node.props['aria-label'] === 'محتوى المعرفة'));
-  for (const item of flatten(tree)) {
-    const node = item.node;
-    if (node && ['input', 'textarea', 'select', 'button'].includes(node.type)) {
-      const disabledByFieldset = item.ancestors.some(ancestor => ancestor.type === 'fieldset' && ancestor.props.disabled);
-      if (node.type === 'input' || node.type === 'textarea' || node.type === 'select' || node.props.disabled) assert.ok(disabledByFieldset || node.props.disabled, `Control lacks disabled state: ${node.type}`);
-    }
-  }
+  requireDisabled(node => node.type === 'textarea' && node.props['aria-label'] === 'محتوى المعرفة');
+  requireDisabled(node => node.type === 'input' && node.props.type === 'file');
 });
 
-test('personality controls remain inactive and the consent warning remains visible', () => {
+test('personality settings can be edited and persisted locally while unsupported knowledge-base controls stay disabled', async () => {
   const h = createHarness();
   let tree = h.render();
-  assert.match(textOf(tree), /الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك/);
+  assert.match(textOf(tree), /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
   tree = click(h, tree, 'رقم الهاتف');
   const phoneInputs = flatten(tree).filter(x => x.node?.type === 'input').map(x => x.node);
   assert.ok(phoneInputs.some(x => x.props.type === 'tel'));
-  for (const input of phoneInputs) assert.ok(input.props.disabled || flatten(tree).some(x => x.node?.type === 'fieldset' && x.node.props.disabled && x.node.props.children));
+  assert.equal(phoneInputs.find(x => x.props.type === 'tel')?.props.disabled, undefined);
   tree = click(h, tree, 'تعديل');
-  assert.match(textOf(tree), /الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك/);
-  const controls = flatten(tree).filter(x => x.node && ['input','textarea','button'].includes(x.node.type));
-  for (const item of controls) {
-    const insideDisabled = item.ancestors.some(parent => parent.type === 'fieldset' && parent.props.disabled);
-    const isNav = item.node.type === 'button' && ['رجوع','إلغاء','إضافة معرفة يدوياً'].includes(textOf(item.node).trim());
-    if (!isNav) assert.ok(item.node.props.disabled || insideDisabled, `Operational control is active: ${textOf(item.node)}`);
-  }
+  assert.match(textOf(tree), /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
+  const botName = find(tree, node => node.type === 'input' && node.props.type === 'text' && node.props.maxLength === 80);
+  botName.props.onChange({ target: { value: 'مساعد تجريبي' } });
+  tree = h.render();
+  assert.equal(button(tree, 'حفظ الشخصية').props.disabled, false);
+  button(tree, 'حفظ الشخصية').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  const saved = h.storeCalls.find(call => call.action === 'whatsapp.agent.personality.set');
+  assert.equal(saved?.payload.botName, 'مساعد تجريبي');
+  tree = h.render();
+  assert.match(textOf(tree), /تم حفظ الشخصية على هذا الجهاز/);
+  const knowledgeFile = find(tree, node => node.type === 'input' && node.props.type === 'file');
+  assert.equal(knowledgeFile.props.disabled, true);
   assert.ok(flatten(tree).some(x => x.node?.type === 'fieldset' && x.node.props.disabled), 'disabled fieldset should enforce inactive fields');
 });
 
 test('only declared WhatsApp preload channels are operational; no generic network, persistence or provider is loaded', () => {
   const imports = [];
   const calls = [];
-  const setters = new Set(['setView','setConnectionTab','setBusinessHoursExpanded','setQuickRepliesExpanded','setManualEntryExpanded','setAgentEnabled','setConversationState','startWhatsApp','disconnectWhatsApp','localStoreClient.call']);
+  const setters = new Set(['setView','setConnectionTab','setBusinessHoursExpanded','setQuickRepliesExpanded','setManualEntryExpanded','setAgentEnabled','setConversationState','updatePersonality','startWhatsApp','disconnectWhatsApp','startPairing','savePersonality','saveGeminiKey','clearGeminiKey','testGeminiKey','localStoreClient.call']);
   function visit(node) {
     if (ts.isImportDeclaration(node)) imports.push(node.moduleSpecifier.text);
     if (ts.isCallExpression(node)) {
@@ -274,12 +328,48 @@ test('only declared WhatsApp preload channels are operational; no generic networ
     inspect(handler);
     assert.ok(invoked.length > 0 && invoked.every(name => setters.has(name)), `onClick does more than local state or declared IPC: ${handler.getText(ast)}`);
   }
-  assert.ok(calls.every(name => !/fetch|axios|request/i.test(name)));
-  assert.match(source, /الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك/);
+  assert.ok(calls.every(name => !/fetch|axios|request/i.test(name) || name === 'setPairingRequestPending'));
+  assert.match(source, /الوكيل متوقف افتراضياً — فعّله فقط بعد إعداد Gemini وموافقتك/);
   assert.match(source, /whatsapp\.agent\.settings\.set/);
   assert.match(source, /api\.connectWhatsApp\(\)/);
+  assert.match(source, /api\.pairWhatsApp\(pairingPhone\)/);
+  assert.match(source, /api\.saveGeminiApiKey\(/);
   assert.match(source, /api\.disconnectWhatsApp\(\)/);
   assert.match(source, /api\?\.onWhatsAppStatus/);
   assert.match(source, /api\?\.onWhatsAppQr/);
   assert.match(source, /QRCodeSVG value=\{qrPayload\}/);
+});
+
+test('Gemini API key UI saves through Electron, clears the input, and never renders the stored key', async () => {
+  let savedKey = '';
+  let testCalls = 0;
+  const api = {
+    onWhatsAppStatus: () => () => {}, onWhatsAppQr: () => () => {}, onWhatsAppPairingCode: () => () => {},
+    getWhatsAppStatus: async () => ({ state: 'idle', qr: null, pairingCode: null }),
+    getGeminiKeyStatus: async () => ({ configured: false, encryptionAvailable: true }),
+    connectWhatsApp: async () => true, pairWhatsApp: async () => true, disconnectWhatsApp: async () => true,
+    saveGeminiApiKey: async key => { savedKey = key; return { configured: true }; },
+    clearGeminiApiKey: async () => ({ configured: false }),
+    testGeminiApiKey: async () => { testCalls += 1; return { ok: true, model: 'gemini-3.8-flash' }; },
+  };
+  const h = createHarness(api);
+  let tree = h.render();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  const input = find(tree, node => node.type === 'input' && node.props.type === 'password');
+  const key = 'synthetic-gemini-key-0123456789';
+  input.props.onChange({ target: { value: key } });
+  tree = h.render();
+  button(tree, 'حفظ المفتاح محلياً').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  assert.equal(savedKey, key);
+  assert.equal(find(tree, node => node.type === 'input' && node.props.type === 'password').props.value, '');
+  assert.doesNotMatch(textOf(tree), new RegExp(key));
+  assert.match(textOf(tree), /يوجد مفتاح محفوظ مشفراً/);
+  button(tree, 'اختبار الاتصال').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  assert.equal(testCalls, 1);
+  assert.match(textOf(tree), /نجح الاتصال بالنموذج المحدد/);
 });

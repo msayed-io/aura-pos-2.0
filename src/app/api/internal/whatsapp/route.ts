@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { localStore, storeErrorResponse } from '@/server/localStore';
-import { processWhatsAppMessage } from '../../../../../local-services/whatsapp-agent.cjs';
+import { configureLocalGeminiApiKey, GEMINI_API_MODEL, hasLocalGeminiApiKey, processWhatsAppMessage, testLocalGemini } from '../../../../../local-services/whatsapp-agent.cjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -28,7 +28,7 @@ const printCompleteSchema = z.object({
   errorCode: z.string().max(48).optional(),
 }).strict();
 const envelopeSchema = z.object({
-  action: z.enum(['message.process', 'message.recoverable', 'message.recover', 'reply.pending', 'reply.claim', 'reply.complete', 'reply.recover', 'print.pending', 'print.claim', 'print.complete', 'print.recover', 'conversation.list', 'conversation.cleanup', 'smoke.enable-agent']),
+  action: z.enum(['message.process', 'message.recoverable', 'message.recover', 'reply.pending', 'reply.claim', 'reply.complete', 'reply.recover', 'print.pending', 'print.claim', 'print.complete', 'print.recover', 'conversation.list', 'conversation.cleanup', 'gemini.configure', 'gemini.status', 'gemini.test', 'smoke.enable-agent']),
   payload: z.unknown().optional(),
 }).strict();
 
@@ -157,11 +157,30 @@ export async function POST(request: NextRequest) {
       case 'conversation.cleanup':
         data = await localStore.dispatch('whatsapp.cleanup', { days: 30 });
         break;
+      case 'gemini.configure': {
+        const checked = z.object({ apiKey: z.string().max(256) }).strict().safeParse(payload);
+        if (!checked.success) throw new RequestError('INVALID_GEMINI_KEY', 400, 'مفتاح Gemini غير صالح.');
+        data = configureLocalGeminiApiKey(checked.data.apiKey);
+        break;
+      }
+      case 'gemini.status': {
+        const checked = z.object({}).strict().safeParse(payload ?? {});
+        if (!checked.success) throw new RequestError('INVALID_GEMINI_STATUS', 400, 'طلب حالة Gemini غير صالح.');
+        const agent = await localStore.dispatch('whatsapp.agent.settings.get') as { enabled?: boolean };
+        data = { configured: hasLocalGeminiApiKey(), agentEnabled: agent.enabled === true, model: GEMINI_API_MODEL };
+        break;
+      }
+      case 'gemini.test': {
+        const checked = z.object({}).strict().safeParse(payload ?? {});
+        if (!checked.success) throw new RequestError('INVALID_GEMINI_TEST', 400, 'طلب اختبار Gemini غير صالح.');
+        data = await testLocalGemini();
+        break;
+      }
       case 'smoke.enable-agent': {
         if (process.env.AURA_INSTALLED_SMOKE !== '1') throw new RequestError('SMOKE_ONLY', 404, 'هذه العملية متاحة داخل اختبار التثبيت فقط.');
         const checked = z.object({}).strict().safeParse(payload ?? {});
         if (!checked.success) throw new RequestError('INVALID_REQUEST', 400, 'صيغة عملية الاختبار غير صالحة.');
-        data = await localStore.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+        data = await localStore.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
         break;
       }
     }

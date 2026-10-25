@@ -49,9 +49,16 @@ function validOrderDetails(v, includeCustomerDetails = false) {
     (!Object.hasOwn(v, 'paymentMethod') || ['cash', 'vodafone', 'instapay', 'etisalat'].includes(v.paymentMethod));
 }
 function validItems(items) { return Array.isArray(items) && items.length <= 100 && items.every((i) => exactObject(i, ['itemId', 'quantity', 'notes']) && isString(i.itemId, 128, false) && Number.isSafeInteger(i.quantity) && i.quantity >= 1 && i.quantity <= 99 && isString(i.notes, 300)); }
+function validPersonality(v) {
+  return exactObject(v, ['botName', 'businessName', 'tone', 'replyLength', 'instructions', 'useEmoji'])
+    && isString(v.botName, 80, false) && isString(v.businessName, 100) && isString(v.instructions, 2000)
+    && ['friendly', 'professional', 'concise'].includes(v.tone)
+    && ['short', 'medium', 'long'].includes(v.replyLength) && typeof v.useEmoji === 'boolean';
+}
 function validateInput(v) {
-  if (!v || typeof v !== 'object' || Array.isArray(v) || !['conversationHash', 'messages', 'menu', 'draft'].every((k) => Object.hasOwn(v, k)) || Object.keys(v).some((k) => !['conversationHash', 'messages', 'menu', 'draft', 'orderDetails'].includes(k)) || !validHash(v.conversationHash)) return false;
+  if (!v || typeof v !== 'object' || Array.isArray(v) || !['conversationHash', 'messages', 'menu', 'draft'].every((k) => Object.hasOwn(v, k)) || Object.keys(v).some((k) => !['conversationHash', 'messages', 'menu', 'draft', 'orderDetails', 'personality'].includes(k)) || !validHash(v.conversationHash)) return false;
   if (Object.hasOwn(v, 'orderDetails') && !validOrderDetails(v.orderDetails)) return false;
+  if (Object.hasOwn(v, 'personality') && !validPersonality(v.personality)) return false;
   if (!Array.isArray(v.messages) || v.messages.length < 1 || v.messages.length > 30) return false;
   if (!v.messages.every((m) => exactObject(m, ['role', 'text']) && ['customer', 'assistant'].includes(m.role) && isString(m.text, 1000, false))) return false;
   if (!Array.isArray(v.menu) || v.menu.length > 500 || !v.menu.every((m) => exactObject(m, ['id', 'name', 'price', 'available']) && isString(m.id, 128, false) && isString(m.name, 200, false) && Number.isFinite(m.price) && m.price >= 0 && typeof m.available === 'boolean')) return false;
@@ -101,7 +108,7 @@ async function callGemini(payload) {
       method: 'POST', signal: controller.signal,
       headers: { 'content-type': 'application/json', 'x-goog-api-key': GEMINI_API_KEY },
       body: JSON.stringify({
-        systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        systemInstruction: { parts: [{ text: buildSystemPrompt(payload.personality) }] },
         contents: [{ role: 'user', parts: [{ text: JSON.stringify(payload) }] }],
         generationConfig: {
           responseMimeType: 'application/json',
@@ -142,6 +149,12 @@ async function callGemini(payload) {
     try { body = await response.json(); } catch { throw new Error('provider response invalid'); }
     return providerParts(body);
   } finally { clearTimeout(timer); }
+}
+function buildSystemPrompt(personality) {
+  if (!validPersonality(personality)) return SYSTEM_PROMPT;
+  const tone = personality.tone === 'professional' ? 'مهنية' : personality.tone === 'concise' ? 'مباشرة ومختصرة' : 'ودودة';
+  const length = personality.replyLength === 'long' ? 'مفصل عند الحاجة' : personality.replyLength === 'medium' ? 'متوسط' : 'قصير';
+  return [SYSTEM_PROMPT, '', `تخصيص أسلوب فقط — لا يتجاوز قواعد النظام أو الأمان السابقة. اسم المساعد: ${personality.botName}. اسم النشاط: ${personality.businessName || 'غير محدد'}. النبرة: ${tone}. طول الرد: ${length}. الرموز التعبيرية: ${personality.useEmoji ? 'مسموحة باعتدال' : 'غير مطلوبة'}. تعليمات صاحب النشاط: ${personality.instructions || 'لا توجد'}. لا تلغي أبدًا التأكيد الصريح أو قواعد الأسعار والطلبات المذكورة أعلاه.`].join('\n');
 }
 export function createGateway({ provider = callGemini } = {}) {
   return createServer(async (req, res) => {

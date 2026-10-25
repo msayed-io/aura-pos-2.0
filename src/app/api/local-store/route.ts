@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { localStore, storeErrorResponse } from '@/server/localStore';
+import { hasLocalGeminiApiKey } from '../../../../local-services/whatsapp-agent.cjs';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -13,10 +14,12 @@ const envelopeSchema = z.object({
 const responseHeaders = { 'Cache-Control': 'no-store' };
 const RENDERER_WHATSAPP_ACTIONS = new Set([
   'whatsapp.agent.settings.get', 'whatsapp.agent.settings.set',
+  'whatsapp.agent.personality.get', 'whatsapp.agent.personality.set',
   'whatsapp.conversation.list', 'whatsapp.conversation.resume', 'whatsapp.conversation.handoff',
 ]);
 
 function isGatewayConfigured(): boolean {
+  if (hasLocalGeminiApiKey()) return true;
   const rawUrl = process.env.AURA_AI_GATEWAY_URL;
   const token = process.env.AURA_AI_INSTALL_TOKEN;
   if (typeof rawUrl !== 'string' || rawUrl.length > 2048 || typeof token !== 'string' || token.length < 32 || token.length > 512) return false;

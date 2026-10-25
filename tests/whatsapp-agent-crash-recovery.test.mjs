@@ -95,7 +95,7 @@ test('SIGKILL during Gateway processing recovers the same durable message once a
 
   store = createLocalStore({ dataDir, seed: false, autoBackup: false });
   await store.initialize();
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   await store.checkpointAndClose();
   store = null;
 

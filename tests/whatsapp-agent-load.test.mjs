@@ -40,7 +40,7 @@ test('20 concurrent conversations complete through local HTTP Gateway and real S
     if (oldNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = oldNodeEnv;
   });
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   const gatewayUrl = `http://127.0.0.1:${address.port}`;
   const { createGatewayClient } = require('../local-services/whatsapp-agent.cjs');
   const gatewayRequest = createGatewayClient({ gatewayUrl, installToken: token, timeoutMs: 5000 });

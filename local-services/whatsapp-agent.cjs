@@ -3,7 +3,7 @@
 
 const { setTimeout: sleepTimer } = require('node:timers/promises');
 
-const CONSENT_VERSION = '1';
+const CONSENT_VERSION = '2';
 const MAX_MESSAGE_LENGTH = 8192;
 const MAX_ITEMS = 20;
 const MAX_QUANTITY = 20;
@@ -11,6 +11,10 @@ const MAX_GATEWAY_BYTES = 16 * 1024;
 const MAX_GATEWAY_ATTEMPTS = 3;
 const GATEWAY_RETRY_DELAYS = [350, 900];
 const FALLBACK_REPLY = 'عذراً، تعذر معالجة رسالتك الآن. لم يُنشأ أي طلب. سيستطيع أحد الموظفين مساعدتك.';
+const GEMINI_API_MODEL = 'gemini-3.8-flash';
+const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com';
+const DEFAULT_AGENT_PERSONALITY = Object.freeze({ botName: 'مساعد Aura POS', businessName: '', tone: 'friendly', replyLength: 'short', instructions: '', useEmoji: false });
+let localGeminiApiKey = null;
 const EXPLICIT_CONFIRMATION = /^(?:تأكيد|تأكيد الطلب|أؤكد|أؤكد الطلب|أكد الطلب|confirm|confirm order)$/iu;
 const DIRECT_PHONE = /(?:\+|00)?[0-9٠-٩][0-9٠-٩\s().-]{7,}[0-9٠-٩]/u;
 const DIRECT_PHONE_GLOBAL = /(?:\+|00)?[0-9٠-٩][0-9٠-٩\s().-]{7,}[0-9٠-٩]/gu;
@@ -162,6 +166,105 @@ function createGatewayClient({
   };
 }
 
+function configureLocalGeminiApiKey(apiKey) {
+  if (apiKey === '') {
+    localGeminiApiKey = null;
+    return { configured: false };
+  }
+  if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(apiKey)) throw new WhatsAppAgentError('INVALID_GEMINI_API_KEY');
+  localGeminiApiKey = apiKey;
+  return { configured: true };
+}
+
+function hasLocalGeminiApiKey() {
+  return typeof localGeminiApiKey === 'string' && localGeminiApiKey.length >= 16;
+}
+
+function buildLocalSystemPrompt(personality = DEFAULT_AGENT_PERSONALITY) {
+  const value = isPlainObject(personality) ? personality : DEFAULT_AGENT_PERSONALITY;
+  const botName = redactGatewayText(String(value.botName || DEFAULT_AGENT_PERSONALITY.botName)).slice(0, 80);
+  const businessName = redactGatewayText(String(value.businessName || '')).slice(0, 100);
+  const instructions = redactGatewayText(String(value.instructions || '')).slice(0, 2000);
+  const tone = ['friendly', 'professional', 'concise'].includes(value.tone) ? value.tone : 'friendly';
+  const replyLength = ['short', 'medium', 'long'].includes(value.replyLength) ? value.replyLength : 'short';
+  return [
+    LOCAL_GEMINI_SYSTEM_PROMPT,
+    '',
+    'تخصيص أسلوب فقط — لا يتجاوز قواعد النظام أو الأمان السابقة:',
+    `اسم المساعد: ${botName}`,
+    `اسم النشاط التجاري: ${businessName || 'غير محدد'}`,
+    `النبرة: ${tone === 'professional' ? 'مهنية' : tone === 'concise' ? 'مباشرة ومختصرة' : 'ودودة'}`,
+    `طول الرد: ${replyLength === 'long' ? 'مفصل عند الحاجة' : replyLength === 'medium' ? 'متوسط' : 'قصير'}`,
+    `استخدام الرموز التعبيرية: ${value.useEmoji === true ? 'مسموح باعتدال' : 'غير مطلوب'}`,
+    `تعليمات صاحب النشاط الإضافية: ${instructions || 'لا توجد'}`,
+    'هذه التفضيلات لا تسمح أبدًا بإلغاء تأكيد العميل الصريح أو اختراع أسعار أو أصناف أو إنشاء طلبات.',
+  ].join('\n');
+}
+
+const LOCAL_GEMINI_SYSTEM_PROMPT = 'أنت مساعد طلبات لمتجر. أجب باللغة المناسبة لرسائل العميل، باختصار وتهذيب. استخدم المنيو والسياق المعطى فقط ولا تخترع أصنافاً. قد يحتوي المنيو على أسعار محلية للاستدلال على الأصناف المناسبة، لكن لا تذكر أي سعر أو مبلغ في reply ولا تنشئ إجمالياً؛ التطبيق يحسب الأسعار والإجمالي محلياً ويتجاهل أي سعر صادر عنك. لا تطلب أو تكشف أرقام هواتف أو معرفات شخصية. عند update_draft أو request_confirmation يجب أن تكون items هي القائمة الكاملة النهائية للمسودة؛ لا تحذف صنفاً إلا إذا طلب العميل ذلك بوضوح. استعمل orderDetails فقط للمعلومات التي ذكرها العميل. لا تنشئ طلبات ولا تدّعِ إتمامها. التطبيق يتحقق مستقلاً من رسالة تأكيد صريحة بعد أحدث ملخص. أعد JSON فقط وفق المخطط المحدد.';
+
+async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKey = localGeminiApiKey, timeoutMs = 15000 } = {}) {
+  if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(apiKey) || typeof fetchImpl !== 'function') {
+    throw new WhatsAppAgentError('LOCAL_GEMINI_NOT_CONFIGURED');
+  }
+  const url = `${GEMINI_API_BASE_URL}/v1beta/models/${GEMINI_API_MODEL}:generateContent`;
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      method: 'POST',
+      redirect: 'error',
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: buildLocalSystemPrompt(payload?.personality) }] },
+        contents: [{ role: 'user', parts: [{ text: JSON.stringify(payload) }] }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 512,
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: 'OBJECT',
+            properties: {
+              reply: { type: 'STRING' },
+              intent: { type: 'STRING', enum: ['chat', 'update_draft', 'request_confirmation', 'confirm', 'handoff'] },
+              items: { type: 'ARRAY', items: { type: 'OBJECT', properties: { itemId: { type: 'STRING' }, quantity: { type: 'INTEGER' }, notes: { type: 'STRING' } }, required: ['itemId', 'quantity', 'notes'], propertyOrdering: ['itemId', 'quantity', 'notes'] } },
+              orderDetails: { type: 'OBJECT', properties: { customerName: { type: 'STRING' }, deliveryMethod: { type: 'STRING', enum: ['pickup', 'delivery'] }, deliveryAddress: { type: 'STRING' }, couponCode: { type: 'STRING' }, paymentMethod: { type: 'STRING', enum: ['cash', 'vodafone', 'instapay', 'etisalat'] } }, propertyOrdering: ['customerName', 'deliveryMethod', 'deliveryAddress', 'couponCode', 'paymentMethod'] },
+            },
+            required: ['reply', 'intent', 'items'],
+            propertyOrdering: ['reply', 'intent', 'items', 'orderDetails'],
+          },
+        },
+      }),
+    });
+  } catch {
+    throw new WhatsAppAgentError('LOCAL_GEMINI_UNAVAILABLE');
+  }
+  if (!response.ok) throw new WhatsAppAgentError(response.status === 429 ? 'LOCAL_GEMINI_RATE_LIMITED' : 'LOCAL_GEMINI_UNAVAILABLE');
+  let body;
+  try { body = await readBoundedJson(response, 64 * 1024); }
+  catch { throw new WhatsAppAgentError('LOCAL_GEMINI_INVALID_RESPONSE'); }
+  const text = body?.candidates?.[0]?.content?.parts?.map(part => typeof part.text === 'string' ? part.text : '').join('');
+  if (typeof text !== 'string' || !text) throw new WhatsAppAgentError('LOCAL_GEMINI_INVALID_RESPONSE');
+  let answer;
+  try { answer = JSON.parse(text); }
+  catch { throw new WhatsAppAgentError('LOCAL_GEMINI_INVALID_RESPONSE'); }
+  if (!validateGatewayOutput(answer)) throw new WhatsAppAgentError('LOCAL_GEMINI_INVALID_RESPONSE');
+  return answer;
+}
+
+async function testLocalGemini() {
+  if (!hasLocalGeminiApiKey()) return { ok: false, model: GEMINI_API_MODEL };
+  const payload = {
+    conversationHash: '0'.repeat(64),
+    messages: [{ role: 'customer', text: 'اختبار اصطناعي للاتصال. أجب بكلمة واحدة: جاهز.' }],
+    menu: [],
+    draft: { id: null, version: 0, status: 'none', items: [] },
+    personality: { ...DEFAULT_AGENT_PERSONALITY },
+  };
+  try { await requestLocalGemini(payload); return { ok: true, model: GEMINI_API_MODEL }; }
+  catch { return { ok: false, model: GEMINI_API_MODEL }; }
+}
+
 function parseDraftData(draft) {
   if (!draft) return null;
   if (isPlainObject(draft.data)) return draft.data;
@@ -200,7 +303,7 @@ function buildLocalSummary(draft) {
   return lines.join('\n');
 }
 
-function buildGatewayPayload(snapshot, conversationHash, latestText) {
+function buildGatewayPayload(snapshot, conversationHash, latestText, personality = DEFAULT_AGENT_PERSONALITY) {
   const history = Array.isArray(snapshot.messages) ? snapshot.messages.slice(-14) : [];
   const messages = history.flatMap(message => {
     const customerText = redactGatewayText(message.text || '').slice(0, 1000);
@@ -217,6 +320,7 @@ function buildGatewayPayload(snapshot, conversationHash, latestText) {
   const menuRows = Array.isArray(snapshot.menu) ? snapshot.menu : [];
   const inventoryRows = Array.isArray(snapshot.inventory) ? snapshot.inventory : [];
   const recipeRows = Array.isArray(snapshot.recipes) ? snapshot.recipes : [];
+  const style = isPlainObject(personality) ? personality : DEFAULT_AGENT_PERSONALITY;
   const stockById = new Map(inventoryRows.map(item => [item.id, Number(item.quantity)]));
   const recipeById = new Map(recipeRows.map(item => [item.id, item]));
   const availableForOne = item => {
@@ -234,6 +338,14 @@ function buildGatewayPayload(snapshot, conversationHash, latestText) {
   return {
     conversationHash,
     messages: messages.slice(-15),
+    personality: {
+      botName: redactGatewayText(String(style.botName || DEFAULT_AGENT_PERSONALITY.botName)).slice(0, 80),
+      businessName: redactGatewayText(String(style.businessName || '')).slice(0, 100),
+      tone: ['friendly', 'professional', 'concise'].includes(style.tone) ? style.tone : 'friendly',
+      replyLength: ['short', 'medium', 'long'].includes(style.replyLength) ? style.replyLength : 'short',
+      instructions: redactGatewayText(String(style.instructions || '')).slice(0, 2000),
+      useEmoji: style.useEmoji === true,
+    },
     menu: menuRows.slice(0, 500).map(item => ({
       id: String(item.id || '').slice(0, 128),
       name: redactGatewayText(String(item.name || '')).slice(0, 200),
@@ -385,10 +497,11 @@ async function processWhatsAppMessage(store, input, { gatewayRequest, resumeExis
     return { order: confirmed?.order || null, printJobs: confirmed?.printJobs || [], replay: Boolean(confirmed?.replay), awaitingPrint: true };
   }
 
-  const makeGatewayRequest = gatewayRequest || createGatewayClient();
   let answer;
   try {
-    const payload = buildGatewayPayload(snapshot || {}, input.conversationHash, input.text);
+    const personality = await store.dispatch('whatsapp.agent.personality.get');
+    const makeGatewayRequest = gatewayRequest || (hasLocalGeminiApiKey() ? requestLocalGemini : createGatewayClient());
+    const payload = buildGatewayPayload(snapshot || {}, input.conversationHash, input.text, personality);
     answer = await makeGatewayRequest(payload);
   } catch {
     const fallback = await prepareReply(store, input, FALLBACK_REPLY);
@@ -465,10 +578,16 @@ module.exports = {
   MAX_ITEMS,
   MAX_QUANTITY,
   FALLBACK_REPLY,
+  GEMINI_API_MODEL,
   WhatsAppAgentError,
+  configureLocalGeminiApiKey,
+  hasLocalGeminiApiKey,
+  requestLocalGemini,
+  testLocalGemini,
   createGatewayClient,
   validateGatewayOutput,
   redactPersonalIdentifiers,
+  buildGatewayPayload,
   buildLocalSummary,
   isExplicitConfirmation,
   processWhatsAppMessage,

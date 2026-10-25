@@ -3,7 +3,7 @@
 
 const { parentPort } = process;
 const { timingSafeEqual } = require('node:crypto');
-const { isDirectJid } = require('./whatsapp-messaging.cjs');
+const { isDirectJid, isValidPairingPhoneNumber } = require('./whatsapp-messaging.cjs');
 const path = require('node:path');
 const { createRequire } = require('node:module');
 const { WhatsAppSession } = require('./whatsapp-session.cjs');
@@ -13,11 +13,12 @@ const token = process.env.AURA_SERVICE_IPC_TOKEN;
 const sessionDir = process.env.AURA_WHATSAPP_SESSION_DIR;
 const runtimePackagePath = process.env.AURA_WHATSAPP_RUNTIME_PACKAGE
   || path.join(__dirname, 'whatsapp-runtime', 'package.json');
-const VALID_COMMANDS = new Set(['start', 'disconnect', 'stop', 'suspend', 'resume', 'reply']);
+const VALID_COMMANDS = new Set(['start', 'disconnect', 'stop', 'suspend', 'resume', 'reply', 'pair']);
 const VALID_ERROR_CODES = new Set([
   'AUTH_STATE_FAILED', 'SOCKET_START_FAILED', 'CREDS_PERSIST_FAILED', 'SESSION_CLEAR_FAILED',
   'SESSION_QUARANTINE_FAILED', 'CONNECTION_EVENT_FAILED', 'OUTBOUND_SEND_FAILED', 'PRESENCE_RESET_FAILED',
-  'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED',
+  'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED', 'PAIRING_CODE_FAILED', 'PAIRING_PHONE_INVALID',
+  'PAIRING_SESSION_ALREADY_REGISTERED',
 ]);
 
 let state = 'idle';
@@ -50,7 +51,9 @@ function send(type, extra = {}) {
 
 function accept(message) {
   const allowedKeys = message?.type === 'command'
-    ? (message.command === 'reply' ? ['protocol', 'service', 'token', 'sequence', 'type', 'command', 'replyId', 'jid', 'text'] : ['protocol', 'service', 'token', 'sequence', 'type', 'command'])
+    ? (message.command === 'reply' ? ['protocol', 'service', 'token', 'sequence', 'type', 'command', 'replyId', 'jid', 'text']
+      : message.command === 'pair' ? ['protocol', 'service', 'token', 'sequence', 'type', 'command', 'phoneNumber']
+        : ['protocol', 'service', 'token', 'sequence', 'type', 'command'])
     : [];
   if (!message || typeof message !== 'object' || Array.isArray(message)
     || Object.keys(message).length !== allowedKeys.length || Object.keys(message).some(key => !allowedKeys.includes(key))
@@ -58,7 +61,8 @@ function accept(message) {
     || !matchesToken(message.token)
     || !Number.isSafeInteger(message.sequence) || message.sequence <= receiveSequence
     || message.type !== 'command' || !VALID_COMMANDS.has(message.command)
-    || (message.command === 'reply' && (typeof message.replyId !== 'string' || !message.replyId || message.replyId.length > 128 || !isDirectJid(message.jid) || typeof message.text !== 'string' || !message.text || message.text.length > 8192))) return;
+    || (message.command === 'reply' && (typeof message.replyId !== 'string' || !message.replyId || message.replyId.length > 128 || !isDirectJid(message.jid) || typeof message.text !== 'string' || !message.text || message.text.length > 8192))
+    || (message.command === 'pair' && !isValidPairingPhoneNumber(message.phoneNumber))) return;
   receiveSequence = message.sequence;
   void enqueueCommand(message).catch(() => sendError('COMMAND_FAILED'));
 }
@@ -72,6 +76,8 @@ async function runCommand(message) {
   if (!session || exiting) return;
   if (command === 'start') {
     await session.connect();
+  } else if (command === 'pair') {
+    await session.connectWithPairing(message.phoneNumber);
   } else if (command === 'disconnect') {
     await session.disconnect();
   } else if (command === 'suspend') {
@@ -119,6 +125,9 @@ function startSession() {
   });
   session.on('qr', qr => {
     if (typeof qr === 'string' && qr.length > 0 && qr.length <= 4096) send('qr', { qr });
+  });
+  session.on('pairing-code', code => {
+    if (code === null || (typeof code === 'string' && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(code))) send('pairing-code', { code });
   });
   session.on('error-code', sendError);
   session.on('text-message', payload => send('incoming-message', payload));

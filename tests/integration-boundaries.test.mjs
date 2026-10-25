@@ -34,10 +34,12 @@ test('only local base, health and the same-origin storage API routes are exposed
 test('Electron preload keeps explicit printer, order and WhatsApp channels only', () => {
   const preload = read('electron/preload.cjs');
   const exposed = [...preload.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9]*):\s*\(/gm)].map(match => match[1]);
-  assert.deepEqual(exposed, ['getPrinters', 'print', 'savePrinterSettings', 'loadPrinterSettings', 'showNotification', 'notifyNewOrder', 'getWhatsAppStatus', 'connectWhatsApp', 'disconnectWhatsApp', 'onWhatsAppStatus', 'onWhatsAppQr']);
+  assert.deepEqual(exposed, ['getPrinters', 'print', 'savePrinterSettings', 'loadPrinterSettings', 'showNotification', 'notifyNewOrder', 'getWhatsAppStatus', 'connectWhatsApp', 'pairWhatsApp', 'disconnectWhatsApp', 'getGeminiKeyStatus', 'saveGeminiApiKey', 'clearGeminiApiKey', 'testGeminiApiKey', 'onWhatsAppStatus', 'onWhatsAppQr', 'onWhatsAppPairingCode']);
   assert.match(preload, /notifyNewOrder:\s*\(displayId\)\s*=>\s*ipcRenderer\.invoke\('orders:new-notification',\s*displayId\)/);
   assert.match(preload, /getWhatsAppStatus:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:status:get'\)/);
   assert.match(preload, /connectWhatsApp:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:connect'\)/);
+  assert.match(preload, /pairWhatsApp:\s*\(phoneNumber\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:pairing',\s*phoneNumber\)/);
+  assert.match(preload, /saveGeminiApiKey:\s*\(apiKey\)\s*=>\s*ipcRenderer\.invoke\('gemini-key:save',\s*apiKey\)/);
   assert.match(preload, /disconnectWhatsApp:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('whatsapp:disconnect'\)/);
   assert.match(preload, /ipcRenderer\.on\('whatsapp:qr'/);
   assert.doesNotMatch(preload, /contextBridge\.exposeInMainWorld\('electronAPI',\s*\{[^}]*ipcRenderer[),]/s);
@@ -135,9 +137,13 @@ test('Bot UI is wired to settings and caller types without restoring removed eng
     'src/aura/types/wakzTypes.ts', 'src/app/api/wakz/[...path]/route.ts',
     'src/app/api/wakz-webhook/route.ts',
   ]) assert.equal(fs.existsSync(path.join(root, file)), false, `${file} must stay removed`);
-  for (const file of filesIn('src').filter(file => /\.[jt]sx?$/.test(file))) {
+  for (const file of filesIn('src').filter(file => /\.[jt]sx?$/.test(file) && !['src/app/api/internal/whatsapp/route.ts', 'src/app/api/local-store/route.ts'].includes(file))) {
     assert.doesNotMatch(read(file), /(?:import\s+[^\n;]*(?:wakz|gemini)|require\(['"][^'"]*(?:wakz|gemini)|generativelanguage\.googleapis|@google\/generative-ai)/i, `Legacy provider path in ${file}`);
   }
+  assert.doesNotMatch(read('src/app/api/local-store/route.ts'), /generativelanguage\.googleapis|AIza[0-9A-Za-z_-]{30,}/);
+  const internalRoute = read('src/app/api/internal/whatsapp/route.ts');
+  assert.match(internalRoute, /'gemini\.configure'/);
+  assert.doesNotMatch(internalRoute, /generativelanguage\.googleapis|AIza[0-9A-Za-z_-]{30,}/);
   const pkg = JSON.parse(read('package.json'));
   const dependencies = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies };
   for (const name of Object.keys(dependencies)) assert.doesNotMatch(name, /wakz|gemini|generative-ai|baileys|whatsapp-web|z-ai-web-dev-sdk/i, `Unexpected provider/runtime dependency in root: ${name}`);

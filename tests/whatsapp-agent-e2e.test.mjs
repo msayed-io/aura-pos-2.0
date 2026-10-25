@@ -56,7 +56,7 @@ test('local Gateway + real SQLite agent flow redacts phone, holds drafts, and cr
     else process.env.NODE_ENV = previousNodeEnv;
   });
 
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   await store.dispatch('inventory.saveStock', { stock: { id: 'pizza-1', name: 'Pizza', quantity: 10 } });
   await store.dispatch('inventory.saveStock', { stock: { id: 'soldout-1', name: 'نفد', quantity: 0 } });
   await store.dispatch('menu.saveItem', { itemData: { id: 'pizza-1', name: 'بيتزا', price: 50, isActive: true } });
@@ -201,7 +201,7 @@ test('stale confirmation racing with an item edit returns a fresh summary and cr
     else process.env.NODE_ENV = previousNodeEnv;
   });
 
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   await store.dispatch('inventory.saveStock', { stock: { id: 'race-item', name: 'صنف اختبار', quantity: 10 } });
   await store.dispatch('menu.saveItem', { itemData: { id: 'race-item', name: 'صنف اختبار', price: 50, isActive: true } });
   const gatewayRequest = createGatewayClient({
@@ -281,7 +281,7 @@ test('two distinct customer confirmation message IDs create one order and one pr
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
   });
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   await store.dispatch('inventory.saveStock', { stock: { id: 'confirm-item', name: 'صنف اختبار', quantity: 3 } });
   await store.dispatch('menu.saveItem', { itemData: { id: 'confirm-item', name: 'صنف اختبار', price: 25, isActive: true } });
   const conversation = 'f'.repeat(64);
@@ -335,7 +335,7 @@ test('stale processing message resumes through the real local Gateway without a 
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
   });
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   const message = {
     accountId: 'primary', conversationHash: 'd'.repeat(64), messageId: 'crash-inbound-1',
     text: 'مرحباً', encryptedReplyTarget: 'opaque-encrypted-jid-reference', customerPhone: '',
@@ -374,7 +374,7 @@ test('Gateway outage gets bounded retries and exactly one safe fallback without 
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previousNodeEnv;
   });
-  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+  await store.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '2' });
   let attempts = 0;
   const gatewayRequest = createGatewayClient({
     gatewayUrl: 'https://gateway.example', installToken: 'x'.repeat(64),

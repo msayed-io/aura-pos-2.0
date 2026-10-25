@@ -5,7 +5,7 @@ import { createServer as createHttpServer } from 'node:http';
 
 const token = 'test-install-secret-never-log';
 process.env.AURA_INSTALL_TOKEN_HASHES = createHash('sha256').update(token).digest('hex');
-process.env.RATE_LIMIT_PER_MINUTE = '10';
+process.env.RATE_LIMIT_PER_MINUTE = '20';
 process.env.MAX_BODY_BYTES = '2048';
 process.env.GEMINI_API_KEY = 'local-test-key';
 process.env.GEMINI_MODEL = 'gemini-3.8-flash';
@@ -55,6 +55,8 @@ test('auth required and input schema is strict', async (t) => {
   assert.equal((await post(url, { body: storedName })).status, 400);
   const storedAddress = valid(); storedAddress.orderDetails.deliveryAddress = 'عنوان محفوظ';
   assert.equal((await post(url, { body: storedAddress })).status, 400);
+  const invalidPersonality = valid(); invalidPersonality.personality = { botName: 'مساعد', businessName: '', tone: 'override-safety', replyLength: 'short', instructions: '', useEmoji: false };
+  assert.equal((await post(url, { body: invalidPersonality })).status, 400);
 });
 test('rejects invalid provider output and provider failures safely', async (t) => {
   const url = await withGateway(t, async () => ({ ...answer(), orderDetails: { price: 3 } }));
@@ -67,7 +69,7 @@ test('byte cap and per-install rate limit', async (t) => {
   const huge = JSON.stringify({ ...valid(), messages: [{ role: 'customer', text: 'x'.repeat(2500) }] });
   assert.equal((await post(sizeUrl, { body: huge })).status, 413);
   const url = await withGateway(t, async () => answer());
-  for (let i = 0; i < 10; i += 1) assert.equal((await post(url)).status, 200);
+  for (let i = 0; i < 20; i += 1) assert.equal((await post(url)).status, 200);
   assert.equal((await post(url)).status, 429);
 });
 test('Gemini REST routing uses configured model, server key, fixed system instruction and constrained JSON output', async (t) => {
@@ -86,11 +88,15 @@ test('Gemini REST routing uses configured model, server key, fixed system instru
   const app = createConfiguredGateway();
   const url = await listen(app);
   t.after(() => close(app));
-  const response = await post(url);
+  const payload = valid();
+  payload.personality = { botName: 'سارة', businessName: 'مخبز تجريبي', tone: 'friendly', replyLength: 'short', instructions: 'تحية ودودة.', useEmoji: false };
+  const response = await post(url, { body: payload });
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), answer());
   assert.equal(seen.url, '/v1beta/models/gemini-3.8-flash:generateContent');
   assert.equal(seen.key, 'local-test-key');
   assert.match(seen.body.systemInstruction.parts[0].text, /لا تنشئ طلبات/);
+  assert.match(seen.body.systemInstruction.parts[0].text, /اسم المساعد: سارة/);
+  assert.match(seen.body.systemInstruction.parts[0].text, /تحية ودودة/);
   assert.equal(seen.body.generationConfig.responseMimeType, 'application/json');
 });

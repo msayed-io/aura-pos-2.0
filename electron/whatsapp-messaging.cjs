@@ -4,6 +4,9 @@ const { createHash } = require('node:crypto');
 function isDirectJid(jid) {
   return typeof jid === 'string' && jid.length <= 128 && /^[A-Za-z0-9._:-]{1,100}@(s\.whatsapp\.net|lid)$/.test(jid);
 }
+function isValidPairingPhoneNumber(phoneNumber) {
+  return typeof phoneNumber === 'string' && /^[1-9][0-9]{7,14}$/.test(phoneNumber);
+}
 function validReply(replyId, jid, text) {
   return typeof replyId === 'string' && replyId.length > 0 && replyId.length <= 128
     && isDirectJid(jid) && typeof text === 'string' && text.length > 0 && text.length <= 8192;
@@ -79,4 +82,4 @@ class OutboundReplyQueue {
   stop() { this.stopped = true; this.clearPending(); }
   resume() { this.stopped = false; }
 }
-module.exports = { isDirectJid, extractPlainText, validReply, replyMessageId, OutboundReplyQueue };
+module.exports = { isDirectJid, isValidPairingPhoneNumber, extractPlainText, validReply, replyMessageId, OutboundReplyQueue };

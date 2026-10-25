@@ -4,13 +4,13 @@
 const { EventEmitter } = require('node:events');
 const { randomBytes, timingSafeEqual } = require('node:crypto');
 const path = require('node:path');
-const { isDirectJid } = require('./whatsapp-messaging.cjs');
+const { isDirectJid, isValidPairingPhoneNumber } = require('./whatsapp-messaging.cjs');
 
-const VALID_STATES = new Set(['idle', 'paused', 'stopping', 'stopped', 'connecting', 'qr', 'connected', 'reconnecting', 'needs-attention']);
+const VALID_STATES = new Set(['idle', 'paused', 'stopping', 'stopped', 'connecting', 'qr', 'pairing', 'connected', 'reconnecting', 'needs-attention']);
 const COMMANDS = new Set(['start', 'disconnect', 'stop', 'suspend', 'resume', 'reply']);
-const MESSAGE_TYPES = new Set(['ready', 'heartbeat', 'status', 'stopped', 'new-order', 'qr', 'error', 'incoming-message', 'reply-status']);
+const MESSAGE_TYPES = new Set(['ready', 'heartbeat', 'status', 'stopped', 'new-order', 'qr', 'pairing-code', 'error', 'incoming-message', 'reply-status']);
 const BASE_MESSAGE_KEYS = ['protocol', 'service', 'token', 'sequence', 'type', 'state'];
-const SAFE_ERROR_CODES = new Set(['AUTH_STATE_FAILED', 'SOCKET_START_FAILED', 'CREDS_PERSIST_FAILED', 'SESSION_CLEAR_FAILED', 'SESSION_QUARANTINE_FAILED', 'CONNECTION_EVENT_FAILED', 'OUTBOUND_SEND_FAILED', 'PRESENCE_RESET_FAILED', 'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED']);
+const SAFE_ERROR_CODES = new Set(['AUTH_STATE_FAILED', 'SOCKET_START_FAILED', 'CREDS_PERSIST_FAILED', 'SESSION_CLEAR_FAILED', 'SESSION_QUARANTINE_FAILED', 'CONNECTION_EVENT_FAILED', 'OUTBOUND_SEND_FAILED', 'PRESENCE_RESET_FAILED', 'LOGOUT_FAILED', 'SOCKET_END_FAILED', 'COMMAND_FAILED', 'PAIRING_CODE_FAILED', 'PAIRING_PHONE_INVALID', 'PAIRING_SESSION_ALREADY_REGISTERED']);
 const INHERITED_ENV = ['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR'];
 
 function tokenMatches(expected, supplied) {
@@ -231,6 +231,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       : message?.type === 'reply-status' ? [...BASE_MESSAGE_KEYS, 'replyId', 'status']
       : message?.type === 'new-order' ? [...BASE_MESSAGE_KEYS, 'displayId']
       : message?.type === 'qr' ? [...BASE_MESSAGE_KEYS, 'qr']
+        : message?.type === 'pairing-code' ? [...BASE_MESSAGE_KEYS, 'code']
         : message?.type === 'error' ? [...BASE_MESSAGE_KEYS, 'errorCode'] : BASE_MESSAGE_KEYS;
     const validEnvelope = message && typeof message === 'object' && !Array.isArray(message)
       && message.protocol === 1 && message.service === 'whatsapp'
@@ -240,6 +241,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       && Object.keys(message).length === allowedKeys.length && Object.keys(message).every(key => allowedKeys.includes(key))
       && (message.type !== 'new-order' || (message.state === 'connected' && typeof message.displayId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(message.displayId)))
       && (message.type !== 'qr' || (message.state === 'qr' && typeof message.qr === 'string' && message.qr.length > 0 && message.qr.length <= 4096))
+      && (message.type !== 'pairing-code' || message.code === null || (message.state === 'pairing' && typeof message.code === 'string' && /^[0-9A-HJKMNP-TV-Z]{8}$/.test(message.code)))
       && (message.type !== 'error' || (typeof message.errorCode === 'string' && SAFE_ERROR_CODES.has(message.errorCode)))
       && (message.type !== 'incoming-message' || (typeof message.messageId === 'string' && message.messageId.length > 0 && message.messageId.length <= 128 && isDirectJid(message.jid) && typeof message.text === 'string' && message.text.length <= 8192))
       && (message.type !== 'reply-status' || (typeof message.replyId === 'string' && message.replyId.length > 0 && message.replyId.length <= 128 && ['sent', 'failed'].includes(message.status)));
@@ -260,7 +262,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       return;
     }
     if (message.type === 'ready' && this.readyAt) return;
-    if (message.type !== 'ready' && message.type !== 'heartbeat' && message.type !== 'status' && message.type !== 'stopped' && message.type !== 'new-order' && message.type !== 'qr' && message.type !== 'error' && message.type !== 'incoming-message' && message.type !== 'reply-status') return;
+    if (message.type !== 'ready' && message.type !== 'heartbeat' && message.type !== 'status' && message.type !== 'stopped' && message.type !== 'new-order' && message.type !== 'qr' && message.type !== 'pairing-code' && message.type !== 'error' && message.type !== 'incoming-message' && message.type !== 'reply-status') return;
     this.inSequence = message.sequence;
     this.lastHeartbeatAt = Date.now();
     if (message.type === 'ready') {
@@ -275,6 +277,8 @@ class UtilityServiceSupervisor extends EventEmitter {
       this.emit('new-order', { displayId: message.displayId, generation });
     } else if (message.type === 'qr') {
       this.emit('qr', message.qr, generation);
+    } else if (message.type === 'pairing-code') {
+      this.emit('pairing-code', message.code, generation);
     } else if (message.type === 'error') {
       this.emit('error-code', message.errorCode, generation);
     } else if (message.type === 'incoming-message') {
@@ -382,6 +386,18 @@ class UtilityServiceSupervisor extends EventEmitter {
       return false;
     }
   }
+
+  pair(phoneNumber) {
+    if (!isValidPairingPhoneNumber(phoneNumber) || !this.child || this.stopping) return false;
+    try {
+      this.child.postMessage({ protocol: 1, service: 'whatsapp', token: this.token, sequence: ++this.outSequence, type: 'command', command: 'pair', phoneNumber });
+      return true;
+    } catch (error) {
+      this.log('SERVICE_COMMAND_FAILED', { generation: this.generation, command: 'pair', errorCode: error?.code || error?.name || 'IPC_ERROR' });
+      return false;
+    }
+  }
+
   async stop() {
     if (this.stopPromise) return this.stopPromise;
     this.stopping = true;
