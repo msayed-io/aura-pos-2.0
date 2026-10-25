@@ -175,7 +175,30 @@ try {
     $waitMilliseconds = [math]::Ceiling(($nextSampleAt - (Get-Date)).TotalMilliseconds)
     if ($waitMilliseconds -gt 0) { Start-Sleep -Milliseconds $waitMilliseconds }
     $app.Refresh()
-    if ($app.HasExited) { throw "Installed application exited during the 10-minute soak ($($app.ExitCode))." }
+    if ($app.HasExited) {
+      $exitSummary = 'smokeReport=missing'
+      if (Test-Path $report) {
+        try {
+          $exitReport = Get-Content $report -Raw | ConvertFrom-Json
+          $exitErrorCode = if ($exitReport.errorCode -match '^[A-Z0-9_]{1,48}$') { $exitReport.errorCode } else { 'unknown' }
+          $exitServiceError = if ($exitReport.serviceErrorCode -match '^[A-Z0-9_]{1,48}$') { $exitReport.serviceErrorCode } else { 'none' }
+          $exitServiceState = if ($exitReport.serviceStateAtExit -match '^[a-z-]{1,24}$') { $exitReport.serviceStateAtExit } else { 'unknown' }
+          $exitRestarts = if ($null -ne $exitReport.serviceRestartCount -and "$($exitReport.serviceRestartCount)" -match '^\d{1,4}$') { $exitReport.serviceRestartCount } else { 'unknown' }
+          $exitServicePid = if ($null -ne $exitReport.servicePidAtExit -and "$($exitReport.servicePidAtExit)" -match '^\d{1,10}$') { $exitReport.servicePidAtExit } else { 'unknown' }
+          $exitSoakMs = if ($null -ne $exitReport.soakDurationMs -and "$($exitReport.soakDurationMs)" -match '^\d{1,12}$') { $exitReport.soakDurationMs } else { 'unknown' }
+          $eventCodes = @($exitReport.serviceSupervisorLogCodes | Where-Object { $_ -match '^SERVICE_[A-Z0-9_]{1,48}$' })
+          $exitEvents = if ($eventCodes.Count -gt 0) { $eventCodes -join ',' } else { 'none' }
+          $exitMetrics = @()
+          foreach ($metricName in @('mainEventLoopP99Ms','serverEventLoopP99Ms','rendererEventLoopP99Ms')) {
+            $metricValue = $exitReport.$metricName
+            if ($null -eq $metricValue -or "$metricValue" -notmatch '^\d+(?:\.\d{1,2})?$') { $metricValue = 'unknown' }
+            $exitMetrics += "$metricName=$metricValue"
+          }
+          $exitSummary = "smokeError=$exitErrorCode; serviceError=$exitServiceError; serviceState=$exitServiceState; serviceRestarts=$exitRestarts; servicePid=$exitServicePid; soakDurationMs=$exitSoakMs; supervisorEvents=$exitEvents; p99=$($exitMetrics -join ',')"
+        } catch { $exitSummary = 'smokeReport=unreadable' }
+      }
+      throw "Installed application exited during the 10-minute soak ($($app.ExitCode); $exitSummary)."
+    }
     $snapshot = Get-InstalledProcessSnapshot
     foreach ($identity in $snapshot.processIdentities) { [void]$observedProcessIdentities.Add([string]$identity) }
     $now = Get-Date

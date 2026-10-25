@@ -214,6 +214,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /AURA_INSTALLED_SMOKE_READY/);
   assert.match(main, /AURA_INSTALLED_SMOKE_STOP/);
   assert.match(main, /soakDurationMs >= 10 \* 60 \* 1000/);
+  assert.match(main, /result\.soakDurationMs = Date\.now\(\) - soakStartedAt/);
   assert.match(main, /result\.whatsappServiceMemoryMb = Math\.max/);
   const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
   assert.match(windowsSmoke, /resources\/app\.asar\.unpacked\/electron/);
@@ -222,6 +223,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /smokeError=\$smokeErrorCode/);
   assert.match(windowsSmoke, /serviceError=\$serviceErrorCode/);
   assert.match(windowsSmoke, /serviceState=\$serviceState/);
+  assert.match(windowsSmoke, /exitReport\.errorCode/);
+  assert.match(windowsSmoke, /soakDurationMs=\$exitSoakMs/);
+  assert.match(windowsSmoke, /supervisorEvents=\$exitEvents/);
   assert.match(windowsSmoke, /serviceRestarts=\$serviceRestartCount/);
   assert.match(windowsSmoke, /servicePid=\$servicePid/);
   assert.match(windowsSmoke, /supervisorEvents=\$supervisorEvents/);

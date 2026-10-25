@@ -922,6 +922,7 @@ async function runInstalledSmoke() {
     fs.writeFileSync(readyPath, JSON.stringify({ ...result, ready: true, soakStartedAt: new Date(soakStartedAt).toISOString() }), { encoding: 'utf8', flag: 'wx' });
     let lastHealthCheckAt = soakStartedAt;
     while (!fs.existsSync(stopPath)) {
+      result.soakDurationMs = Date.now() - soakStartedAt;
       if (Date.now() - soakStartedAt > 11 * 60 * 1000) throw new Error('SMOKE_SOAK_TIMEOUT');
       const current = serviceSupervisor.snapshot();
       if (current.state !== 'qr' || !Number.isInteger(current.pid)
