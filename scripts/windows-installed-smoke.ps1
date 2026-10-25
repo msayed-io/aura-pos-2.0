@@ -12,6 +12,8 @@ $gatewayStderr = Join-Path $root 'gateway.stderr.log'
 $resourceSamplePath = Join-Path $env:GITHUB_WORKSPACE 'windows-installed-resource-sample.json'
 $gateway = $null
 $app = $null
+$resourceSamples = @()
+$processTreeChangeDiagnostics = $null
 New-Item -ItemType Directory -Force -Path $root, $profile | Out-Null
 $env:APPDATA = Join-Path $profile 'Roaming'
 $env:LOCALAPPDATA = Join-Path $profile 'Local'
@@ -43,12 +45,27 @@ function Get-InstalledProcessSnapshot {
     if ($creation -is [datetime]) { $creation = $creation.ToUniversalTime().ToString('o') }
     "$([int]$_.ProcessId)|$creation"
   } | Sort-Object)
+  $processDetails = @($entries | ForEach-Object {
+    $creation = $_.CreationDate
+    if ($creation -is [datetime]) { $creation = $creation.ToUniversalTime().ToString('o') }
+    [pscustomobject]@{
+      identity = "$([int]$_.ProcessId)|$creation"
+      processId = [int]$_.ProcessId
+      parentProcessId = [int]$_.ParentProcessId
+      imageName = [System.IO.Path]::GetFileNameWithoutExtension([string]$_.Name)
+      creationTimeUtc = [string]$creation
+      cpuSeconds = [math]::Round((([double]$_.KernelModeTime + [double]$_.UserModeTime) / 10000000), 3)
+      workingSetBytes = [double]$_.WorkingSetSize
+      privateMemoryBytes = [double]$_.PrivatePageCount
+      handleCount = [int64]$_.HandleCount
+    }
+  })
   if ($null -eq $cpuSeconds) { $cpuSeconds = 0.0 }
   if ($null -eq $workingSetBytes) { $workingSetBytes = 0 }
   if ($null -eq $privateMemoryBytes) { $privateMemoryBytes = 0 }
   if ($null -eq $handleCount) { $handleCount = 0 }
   [pscustomobject]@{
-    processEntries = $entries
+    processDetails = $processDetails
     processCount = $entries.Count
     processIds = @($entries | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
     processImageNames = $processImageNames
@@ -215,9 +232,23 @@ try {
       foreach ($identity in $retrySnapshot.processIdentities) { [void]$observedProcessIdentities.Add([string]$identity) }
       $retryIdentityKey = @($retrySnapshot.processIdentities | Sort-Object) -join ','
       if ($retryIdentityKey -ne $previousIdentityKey) {
-        $addedProcessCount = @($retrySnapshot.processIdentities | Where-Object { $lastSnapshot.processIdentities -notcontains $_ }).Count
-        $removedProcessCount = @($lastSnapshot.processIdentities | Where-Object { $retrySnapshot.processIdentities -notcontains $_ }).Count
-        throw "Application process tree changed during CPU sampling (added=$addedProcessCount; removed=$removedProcessCount); CPU deltas are not comparable."
+        $addedProcessIdentities = @($retrySnapshot.processIdentities | Where-Object { $lastSnapshot.processIdentities -notcontains $_ })
+        $removedProcessIdentities = @($lastSnapshot.processIdentities | Where-Object { $retrySnapshot.processIdentities -notcontains $_ })
+        $addedProcessDetails = @($retrySnapshot.processDetails | Where-Object { $lastSnapshot.processIdentities -notcontains $_.identity })
+        $removedProcessDetails = @($lastSnapshot.processDetails | Where-Object { $retrySnapshot.processIdentities -notcontains $_.identity })
+        $processTreeChangeDiagnostics = [pscustomobject]@{
+          detectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
+          previousCpuSeconds = [math]::Round($lastSnapshot.cpuSeconds, 3)
+          currentCpuSeconds = [math]::Round($snapshot.cpuSeconds, 3)
+          retryCpuSeconds = [math]::Round($retrySnapshot.cpuSeconds, 3)
+          previousProcessDetails = $lastSnapshot.processDetails
+          currentProcessDetails = $snapshot.processDetails
+          retryProcessDetails = $retrySnapshot.processDetails
+          added = $addedProcessDetails
+          removed = $removedProcessDetails
+        }
+        $processTreeDetailsJson = $processTreeChangeDiagnostics | ConvertTo-Json -Compress -Depth 5
+        throw "Application process tree changed during CPU sampling (added=$($addedProcessIdentities.Count); removed=$($removedProcessIdentities.Count)); CPU deltas are not comparable. Safe process diff: $processTreeDetailsJson"
       }
       $now = Get-Date
       $elapsed = [math]::Max(0.1, ($now - $lastSampleAt).TotalSeconds)
@@ -469,6 +500,23 @@ try {
     } finally { $stream.Dispose() }
   }
   Write-Host "Installed smoke passed; DB bytes=$($db.Length); Baileys=$($baileys.version); load p99 Main/server/renderer=$($ready.mainEventLoopP99Ms)/$($ready.serverEventLoopP99Ms)/$($ready.rendererEventLoopP99Ms)ms; idle app CPU=$idleApplicationCpuPercent%; system CPU=$idleSystemCpuPercent%; private memory peak growth=$privatePeakGrowthPercent%; handle peak growth=$peakHandleGrowthPercent%; processes stable=$processCountStable; process identities stable=$processIdentityStable; WhatsApp service peak=$($smoke.whatsappServiceMemoryMb)MB."
+} catch {
+  if (($resourceSamples.Count -gt 0 -or $null -ne $processTreeChangeDiagnostics) -and !(Test-Path -LiteralPath $resourceSamplePath)) {
+    $partialReason = 'installed-smoke-failure'
+    if ($null -ne $processTreeChangeDiagnostics) { $partialReason = 'process-tree-change-during-cpu-sampling' }
+    $partialReport = [pscustomobject]@{
+      schema = 2
+      os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
+      partial = $true
+      partialReason = $partialReason
+      sampleCount = $resourceSamples.Count
+      processTreeChange = $processTreeChangeDiagnostics
+      samples = $resourceSamples
+    }
+    try { $partialReport | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $resourceSamplePath -Encoding utf8 }
+    catch { Write-Host 'Could not persist partial Windows resource diagnostics.' }
+  }
+  throw
 } finally {
   if ($app) {
     $app.Refresh()

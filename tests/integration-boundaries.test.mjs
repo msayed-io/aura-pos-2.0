@@ -265,6 +265,20 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /if \(!\$processCountStable\)/);
   assert.match(windowsSmoke, /if \(!\$processIdentityStable\)/);
   assert.match(windowsSmoke, /processImageNames = @\(\$entries \| ForEach-Object \{ \[string\]\$_.Name \} \| Sort-Object\)/);
+  const processDetailsStart = windowsSmoke.indexOf('$processDetails = @(');
+  const processDetailsEnd = windowsSmoke.indexOf('if ($null -eq $cpuSeconds)', processDetailsStart);
+  assert.ok(processDetailsStart >= 0 && processDetailsEnd > processDetailsStart, 'The smoke must expose a bounded process diagnostic projection.');
+  const safeProcessProjection = windowsSmoke.slice(processDetailsStart, processDetailsEnd);
+  assert.match(safeProcessProjection, /processId = \[int\]\$_.ProcessId/);
+  assert.match(safeProcessProjection, /parentProcessId = \[int\]\$_.ParentProcessId/);
+  assert.match(safeProcessProjection, /imageName = \[System\.IO\.Path\]::GetFileNameWithoutExtension\(\[string\]\$_.Name\)/);
+  assert.match(safeProcessProjection, /creationTimeUtc = \[string\]\$creation/);
+  assert.match(safeProcessProjection, /cpuSeconds = \[math\]::Round/);
+  assert.match(safeProcessProjection, /workingSetBytes = \[double\]\$_.WorkingSetSize/);
+  assert.match(safeProcessProjection, /privateMemoryBytes = \[double\]\$_.PrivatePageCount/);
+  assert.match(safeProcessProjection, /handleCount = \[int64\]\$_.HandleCount/);
+  assert.doesNotMatch(safeProcessProjection, /ExecutablePath|CommandLine|Environment/);
+  assert.doesNotMatch(windowsSmoke, /processEntries\s*=\s*\$entries/);
   assert.match(windowsSmoke, /processImageNames = \$snapshot\.processImageNames/);
   assert.match(windowsSmoke, /processImageSetCount = \$processImageSets\.Count/);
   assert.match(windowsSmoke, /ParentProcessId/);
@@ -272,8 +286,22 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /KernelModeTime/);
   assert.match(windowsSmoke, /PrivatePageCount/);
   assert.match(windowsSmoke, /retrySnapshot = Get-InstalledProcessSnapshot/);
+  assert.match(windowsSmoke, /if \(\$retryIdentityKey -ne \$previousIdentityKey\)/);
+  assert.match(windowsSmoke, /addedProcessDetails = @\(\$retrySnapshot\.processDetails/);
+  assert.match(windowsSmoke, /removedProcessDetails = @\(\$lastSnapshot\.processDetails/);
+  assert.match(windowsSmoke, /processTreeChangeDiagnostics = \[pscustomobject\]@\{/);
+  assert.match(windowsSmoke, /Safe process diff: \$processTreeDetailsJson/);
   assert.match(windowsSmoke, /Application process tree changed during CPU sampling/);
   assert.match(windowsSmoke, /WMI CPU counters regressed after a stable-process retry/);
+  assert.match(windowsSmoke, /partialReason = 'process-tree-change-during-cpu-sampling'/);
+  assert.match(windowsSmoke, /partial = \$true/);
+  assert.match(windowsSmoke, /sampleCount = \$resourceSamples\.Count/);
+  assert.match(windowsSmoke, /processTreeChange = \$processTreeChangeDiagnostics/);
+  assert.match(windowsSmoke, /samples = \$resourceSamples/);
+  assert.match(windowsSmoke, /Set-Content -LiteralPath \$resourceSamplePath -Encoding utf8/);
+  assert.match(windowsSmoke, /Could not persist partial Windows resource diagnostics/);
+  assert.match(windowsSmoke, /\}\s*catch \{\s*if \(\(\$resourceSamples\.Count -gt 0[\s\S]*?partial = \$true[\s\S]*?Set-Content -LiteralPath \$resourceSamplePath[\s\S]*?catch \{ Write-Host 'Could not persist partial Windows resource diagnostics\.' \}\s*\}\s*throw\s*\}\s*finally \{/);
+  assert.match(windowsSmoke, /resourceSamples\.Count -lt 270/);
   assert.match(windowsSmoke, /\$nextSampleAt = \$now\.AddSeconds\(2\)/);
   assert.match(windowsSmoke, /cpuIntervalStartUtc = \$lastSampleAt\.ToUniversalTime\(\)\.ToString\('o'\)/);
   assert.match(windowsSmoke, /observedProcessIdentities\.Contains/);
@@ -311,6 +339,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
 
 test('Windows release is master-only, versioned, run-owned and cleans only partial publication', () => {
   const workflow = read('.github/workflows/aura-pos-windows-release.yml');
+  assert.match(workflow, /Upload Windows resource sample[\s\S]*?if: always\(\)[\s\S]*?name: windows-installed-resource-sample-\$\{\{ github\.run_id \}\}[\s\S]*?path: windows-installed-resource-sample\.json[\s\S]*?if-no-files-found: warn/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /publish:[\s\S]*?if: github\.ref == 'refs\/heads\/master'/);
   assert.match(workflow, /Calculate next semantic version after source tests/);
