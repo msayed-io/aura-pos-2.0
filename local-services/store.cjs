@@ -64,7 +64,7 @@ function createLocalStore({ dataDir, autoBackup = true, seed = true, migrationsD
     return new PrismaClient({ datasources: { db: { url } }, log: [] });
   }
   async function setPragmas(client) {
-    const journal = await client.$queryRawUnsafe('PRAGMA journal_mode=WAL');
+    const journal = await retry(() => client.$queryRawUnsafe('PRAGMA journal_mode=WAL'));
     if (String(journal[0]?.journal_mode).toLowerCase() !== 'wal') throw new StoreError('DATABASE_CORRUPT','SQLite could not enter WAL mode; database may be damaged');
     await client.$queryRawUnsafe('PRAGMA synchronous=FULL');
     await client.$queryRawUnsafe('PRAGMA foreign_keys=ON');
@@ -94,7 +94,7 @@ function createLocalStore({ dataDir, autoBackup = true, seed = true, migrationsD
     const tail=sql.slice(start).trim();if(tail)out.push(tail);return out;
   }
   async function applyMigrations(client) {
-    await client.$executeRawUnsafe('CREATE TABLE IF NOT EXISTS "_LocalMigrations" ("name" TEXT NOT NULL PRIMARY KEY, "checksum" TEXT NOT NULL, "appliedAt" INTEGER NOT NULL)');
+    await retry(() => client.$executeRawUnsafe('CREATE TABLE IF NOT EXISTS "_LocalMigrations" ("name" TEXT NOT NULL PRIMARY KEY, "checksum" TEXT NOT NULL, "appliedAt" INTEGER NOT NULL)'));
     if (!migrationRoot || !fs.existsSync(migrationRoot)) throw new StoreError('MIGRATIONS_NOT_FOUND','Local database migrations directory was not found');
     const dirs = fs.readdirSync(migrationRoot, { withFileTypes: true }).filter(d => d.isDirectory()).map(d => d.name).sort();
     if (!dirs.length) throw new StoreError('MIGRATIONS_NOT_FOUND','No local database migrations were found');
@@ -114,7 +114,7 @@ function createLocalStore({ dataDir, autoBackup = true, seed = true, migrationsD
         }, { maxWait: 5000, timeout: 30000 }));
       } catch (e) { log('MIGRATION_FAILED', { migration: name, errorCode: e.code || 'SQL_ERROR' }); if(e instanceof StoreError) throw e; throw new StoreError('MIGRATION_FAILED', `Migration ${name} failed and was rolled back.`, { migration: name, prismaCode:e.code }); }
     }
-    await client.$executeRawUnsafe('DELETE FROM "_LocalMigrations" WHERE name = ?', '__migration_lock__');
+    await retry(() => client.$executeRawUnsafe('DELETE FROM "_LocalMigrations" WHERE name = ?', '__migration_lock__'));
   }
   async function quickCheck(client) {
     const rows = await client.$queryRawUnsafe('PRAGMA quick_check');
