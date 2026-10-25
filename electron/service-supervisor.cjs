@@ -67,6 +67,7 @@ class UtilityServiceSupervisor extends EventEmitter {
     log = (code, context = {}) => console.error(JSON.stringify({ component: 'service-supervisor', code, ...context })),
     heartbeatTimeoutMs = 20000,
     startupTimeoutMs = 20000,
+    spawnTimeoutMs = 30000,
     monitorIntervalMs = 5000,
     memoryLimitBytes = 256 * 1024 * 1024,
     backoffBaseMs = 1000,
@@ -86,6 +87,7 @@ class UtilityServiceSupervisor extends EventEmitter {
     this.log = log;
     this.heartbeatTimeoutMs = heartbeatTimeoutMs;
     this.startupTimeoutMs = startupTimeoutMs;
+    this.spawnTimeoutMs = spawnTimeoutMs;
     this.monitorIntervalMs = monitorIntervalMs;
     this.memoryLimitBytes = memoryLimitBytes;
     this.backoffBaseMs = backoffBaseMs;
@@ -104,6 +106,7 @@ class UtilityServiceSupervisor extends EventEmitter {
     this.inSequence = 0;
     this.invalidMessages = 0;
     this.lastHeartbeatAt = 0;
+    this.spawnRequestedAt = 0;
     this.spawnedAt = 0;
     this.readyAt = 0;
     this.state = 'stopped';
@@ -112,6 +115,7 @@ class UtilityServiceSupervisor extends EventEmitter {
     this.terminating = false;
     this.restartTimer = null;
     this.monitorTimer = null;
+    this.spawnAbandonTimer = null;
     this.stopPromise = null;
   }
 
@@ -142,9 +146,12 @@ class UtilityServiceSupervisor extends EventEmitter {
     this.outSequence = 0;
     this.invalidMessages = 0;
     this.lastHeartbeatAt = Date.now();
-    this.spawnedAt = Date.now();
+    this.spawnRequestedAt = Date.now();
+    this.spawnedAt = 0;
     this.readyAt = 0;
     this.terminating = false;
+    if (this.spawnAbandonTimer) clearTimeout(this.spawnAbandonTimer);
+    this.spawnAbandonTimer = null;
 
     let child;
     try {
@@ -166,10 +173,56 @@ class UtilityServiceSupervisor extends EventEmitter {
     this.exitPromise = new Promise(resolve => {
       child.once('exit', code => resolve({ code }));
     });
+    child.once('spawn', () => this.handleSpawn(child, generation));
     child.on('message', message => this.handleMessage(child, generation, message));
     child.on('error', type => this.log('SERVICE_PROCESS_ERROR', { generation, errorType: String(type || 'UNKNOWN').slice(0, 40) }));
     child.on('exit', code => this.handleExit(child, generation, code));
+  }
+
+  handleSpawn(child, generation) {
+    if (child !== this.child || generation !== this.generation || this.stopping) {
+      this.log('SERVICE_LATE_SPAWN', { generation });
+      this.killChild(child, generation, 'late-spawn');
+      return;
+    }
+    if (this.spawnAbandonTimer) clearTimeout(this.spawnAbandonTimer);
+    this.spawnAbandonTimer = null;
+    this.spawnedAt = Date.now();
+    this.log('SERVICE_SPAWNED', { generation, pid: Number.isInteger(child.pid) ? child.pid : null });
     this.emit('spawn', { pid: child.pid, generation });
+    if (this.terminating) this.killChild(child, generation, 'spawn-timeout');
+  }
+
+  killChild(child, generation, reason) {
+    let accepted = false;
+    try {
+      accepted = child.kill();
+    } catch (error) {
+      this.log('SERVICE_KILL_FAILED', { generation, reason, errorCode: error?.code || error?.name || 'KILL_ERROR' });
+      return false;
+    }
+    if (!accepted) this.log('SERVICE_KILL_FAILED', { generation, reason, errorCode: 'KILL_NOT_ACCEPTED' });
+    return accepted;
+  }
+
+  abandonUnspawnedChild(child, generation) {
+    if (this.spawnAbandonTimer) clearTimeout(this.spawnAbandonTimer);
+    this.spawnAbandonTimer = setTimeout(() => {
+      this.spawnAbandonTimer = null;
+      if (child !== this.child || generation !== this.generation || this.stopping) return;
+      if (Number.isInteger(child.pid)) {
+        this.spawnedAt ||= Date.now();
+        this.killChild(child, generation, 'spawn-timeout');
+        return;
+      }
+      this.log('SERVICE_SPAWN_ABANDONED', { generation });
+      this.child = null;
+      this.exitPromise = null;
+      this.spawnedAt = 0;
+      this.terminating = false;
+      this.scheduleRestart('spawn-timeout');
+    }, this.forcedStopMs);
+    this.spawnAbandonTimer.unref?.();
   }
 
   handleMessage(child, generation, message) {
@@ -195,7 +248,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       this.log('SERVICE_MESSAGE_REJECTED', { generation, count: this.invalidMessages });
       this.emit('protocol-rejected', { generation });
       this.terminating = true;
-      try { child.kill(); } catch { this.log('SERVICE_KILL_FAILED', { generation, reason: 'protocol' }); }
+      this.killChild(child, generation, 'protocol');
       return;
     }
     if (!MESSAGE_TYPES.has(message.type) || message.sequence <= this.inSequence) {
@@ -203,7 +256,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       this.log('SERVICE_MESSAGE_REJECTED', { generation, count: this.invalidMessages });
       this.emit('protocol-rejected', { generation });
       this.terminating = true;
-      try { child.kill(); } catch { this.log('SERVICE_KILL_FAILED', { generation, reason: 'protocol' }); }
+      this.killChild(child, generation, 'protocol');
       return;
     }
     if (message.type === 'ready' && this.readyAt) return;
@@ -233,9 +286,12 @@ class UtilityServiceSupervisor extends EventEmitter {
 
   handleExit(child, generation, code) {
     if (child !== this.child || generation !== this.generation) return;
+    if (this.spawnAbandonTimer) clearTimeout(this.spawnAbandonTimer);
+    this.spawnAbandonTimer = null;
     this.child = null;
     this.readyAt = 0;
     this.lastHeartbeatAt = 0;
+    this.spawnedAt = 0;
     if (this.stopping) {
       this.setState('stopped');
       this.emit('stopped', { generation, code });
@@ -265,16 +321,26 @@ class UtilityServiceSupervisor extends EventEmitter {
     const child = this.child;
     if (!child || this.stopping || this.terminating) return;
     const now = Date.now();
+    if (!Number.isInteger(child.pid)) {
+      if (now - this.spawnRequestedAt > this.spawnTimeoutMs) {
+        this.log('SERVICE_SPAWN_TIMEOUT', { generation: this.generation, elapsedMs: now - this.spawnRequestedAt });
+        this.terminating = true;
+        this.killChild(child, this.generation, 'spawn-timeout');
+        this.abandonUnspawnedChild(child, this.generation);
+      }
+      return;
+    }
+    if (!this.spawnedAt) this.spawnedAt = now;
     if (!this.readyAt && now - this.spawnedAt > this.startupTimeoutMs) {
-      this.log('SERVICE_STARTUP_TIMEOUT', { generation: this.generation });
+      this.log('SERVICE_STARTUP_TIMEOUT', { generation: this.generation, pid: child.pid, elapsedMs: now - this.spawnedAt });
       this.terminating = true;
-      try { child.kill(); } catch { this.log('SERVICE_KILL_FAILED', { generation: this.generation, reason: 'startup-timeout' }); }
+      this.killChild(child, this.generation, 'startup-timeout');
       return;
     }
     if (this.readyAt && now - this.lastHeartbeatAt > this.heartbeatTimeoutMs) {
       this.log('SERVICE_HEARTBEAT_TIMEOUT', { generation: this.generation });
       this.terminating = true;
-      try { child.kill(); } catch { this.log('SERVICE_KILL_FAILED', { generation: this.generation, reason: 'heartbeat-timeout' }); }
+      this.killChild(child, this.generation, 'heartbeat-timeout');
       return;
     }
     if (this.readyAt && now - this.readyAt > 60000) this.restartCount = 0;
@@ -288,7 +354,7 @@ class UtilityServiceSupervisor extends EventEmitter {
         this.log('SERVICE_MEMORY_LIMIT', { generation: this.generation, memoryBytes: bytes, limitBytes: this.memoryLimitBytes });
         this.emit('memory-limit', { pid: child.pid, generation: this.generation, memoryBytes: bytes, limitBytes: this.memoryLimitBytes });
         this.terminating = true;
-        try { child.kill(); } catch { this.log('SERVICE_KILL_FAILED', { generation: this.generation, reason: 'memory-limit' }); }
+        this.killChild(child, this.generation, 'memory-limit');
       }
     } catch (error) {
       this.log('SERVICE_METRICS_FAILED', { generation: this.generation, errorCode: error?.code || error?.name || 'METRICS_ERROR' });
@@ -322,8 +388,10 @@ class UtilityServiceSupervisor extends EventEmitter {
     this.started = false;
     if (this.monitorTimer) clearInterval(this.monitorTimer);
     if (this.restartTimer) clearTimeout(this.restartTimer);
+    if (this.spawnAbandonTimer) clearTimeout(this.spawnAbandonTimer);
     this.monitorTimer = null;
     this.restartTimer = null;
+    this.spawnAbandonTimer = null;
     const child = this.child;
     const exitPromise = this.exitPromise;
     if (!child || !exitPromise) {
@@ -340,7 +408,7 @@ class UtilityServiceSupervisor extends EventEmitter {
       let result = await withTimeout(exitPromise, this.gracefulStopMs);
       if (!result.completed) {
         this.log('SERVICE_STOP_TIMEOUT', { generation: this.generation });
-        try { child.kill(); } catch (error) { this.log('SERVICE_KILL_FAILED', { generation: this.generation, errorCode: error?.code || error?.name || 'KILL_ERROR' }); }
+        this.killChild(child, this.generation, 'stop-timeout');
         result = await withTimeout(exitPromise, this.forcedStopMs);
       }
       if (!result.completed) throw new Error('Utility service did not exit after graceful and forced stop');

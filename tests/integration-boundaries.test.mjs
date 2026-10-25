@@ -191,6 +191,10 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /result\.serviceRestartCount = serviceSupervisor\.restartCount/);
   assert.match(main, /result\.servicePidAtExit = serviceSupervisor\.snapshot\(\)\.pid/);
   assert.match(main, /whatsAppSupervisorLogCodes\.push\(code\)/);
+  const serviceSupervisorSource = read('electron/service-supervisor.cjs');
+  assert.match(serviceSupervisorSource, /child\.once\('spawn', \(\) => this\.handleSpawn/);
+  assert.match(serviceSupervisorSource, /SERVICE_SPAWN_TIMEOUT/);
+  assert.match(serviceSupervisorSource, /SERVICE_SPAWN_ABANDONED/);
   assert.match(main, /SMOKE_RENDERER_METRICS_MISSING/);
   assert.match(main, /SMOKE_SERVER_METRICS_MISSING/);
   assert.match(main, /monitorEventLoopDelay\(\{ resolution: 1 \}\)/);
