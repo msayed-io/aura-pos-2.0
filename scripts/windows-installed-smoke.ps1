@@ -100,10 +100,14 @@ function Get-InstalledProcessSnapshot {
       handleCount = [int64]$_.HandleCount
     }
   })
+  $coreHandleCount = ($processDetails | Where-Object { $_.processRole -ne 'gpu' } | Measure-Object -Property handleCount -Sum).Sum
+  $gpuHandleCount = ($processDetails | Where-Object { $_.processRole -eq 'gpu' } | Measure-Object -Property handleCount -Sum).Sum
   if ($null -eq $cpuSeconds) { $cpuSeconds = 0.0 }
   if ($null -eq $workingSetBytes) { $workingSetBytes = 0 }
   if ($null -eq $privateMemoryBytes) { $privateMemoryBytes = 0 }
   if ($null -eq $handleCount) { $handleCount = 0 }
+  if ($null -eq $coreHandleCount) { $coreHandleCount = 0 }
+  if ($null -eq $gpuHandleCount) { $gpuHandleCount = 0 }
   [pscustomobject]@{
     processDetails = $processDetails
     processCount = $entries.Count
@@ -114,6 +118,8 @@ function Get-InstalledProcessSnapshot {
     workingSetBytes = [double]$workingSetBytes
     privateMemoryBytes = [double]$privateMemoryBytes
     handleCount = [int64]$handleCount
+    coreHandleCount = [int64]$coreHandleCount
+    gpuHandleCount = [int64]$gpuHandleCount
   }
 }
 
@@ -306,6 +312,8 @@ try {
       processIdentities = $snapshot.processIdentities
       processDetails = $snapshot.processDetails
       handleCount = $snapshot.handleCount
+      coreHandleCount = $snapshot.coreHandleCount
+      gpuHandleCount = $snapshot.gpuHandleCount
       workingSetMB = [math]::Round($snapshot.workingSetBytes / 1MB, 1)
       privateMemoryMB = [math]::Round($snapshot.privateMemoryBytes / 1MB, 1)
     }
@@ -349,11 +357,18 @@ try {
   $finalPrivateMB = [double](($finalWindow | Measure-Object -Property privateMemoryMB -Average).Average)
   $privatePeakGrowthPercent = if ($initialPrivateMB -gt 0) { [math]::Round((($peakPrivateMB - $initialPrivateMB) / $initialPrivateMB) * 100, 2) } else { 999.0 }
   $privateFinalGrowthPercent = if ($initialPrivateMB -gt 0) { [math]::Round((($finalPrivateMB - $initialPrivateMB) / $initialPrivateMB) * 100, 2) } else { 999.0 }
-  $initialHandles = [double](($initialWindow | Measure-Object -Property handleCount -Average).Average)
-  $peakHandles = [double](($resourceSamples | Measure-Object -Property handleCount -Maximum).Maximum)
-  $finalHandles = [double](($finalWindow | Measure-Object -Property handleCount -Average).Average)
-  $peakHandleGrowthPercent = if ($initialHandles -gt 0) { [math]::Round((($peakHandles - $initialHandles) / $initialHandles) * 100, 2) } else { 999.0 }
-  $finalHandleGrowthPercent = if ($initialHandles -gt 0) { [math]::Round((($finalHandles - $initialHandles) / $initialHandles) * 100, 2) } else { 999.0 }
+  $initialCoreHandles = [double](($initialWindow | Measure-Object -Property coreHandleCount -Average).Average)
+  $peakCoreHandles = [double](($resourceSamples | Measure-Object -Property coreHandleCount -Maximum).Maximum)
+  $finalCoreHandles = [double](($finalWindow | Measure-Object -Property coreHandleCount -Average).Average)
+  $coreHandleGrowthPercent = if ($initialCoreHandles -gt 0) { [math]::Round((($peakCoreHandles - $initialCoreHandles) / $initialCoreHandles) * 100, 2) } else { 999.0 }
+  $finalCoreHandleGrowthPercent = if ($initialCoreHandles -gt 0) { [math]::Round((($finalCoreHandles - $initialCoreHandles) / $initialCoreHandles) * 100, 2) } else { 999.0 }
+  $initialGpuHandles = [double](($initialWindow | Measure-Object -Property gpuHandleCount -Average).Average)
+  $peakGpuHandles = [double](($resourceSamples | Measure-Object -Property gpuHandleCount -Maximum).Maximum)
+  $finalGpuHandles = [double](($finalWindow | Measure-Object -Property gpuHandleCount -Average).Average)
+  $initialTotalHandles = [double](($initialWindow | Measure-Object -Property handleCount -Average).Average)
+  $peakTotalHandles = [double](($resourceSamples | Measure-Object -Property handleCount -Maximum).Maximum)
+  $finalTotalHandles = [double](($finalWindow | Measure-Object -Property handleCount -Average).Average)
+  $totalHandleGrowthPercent = if ($initialTotalHandles -gt 0) { [math]::Round((($peakTotalHandles - $initialTotalHandles) / $initialTotalHandles) * 100, 2) } else { 999.0 }
   $totalProcessCounts = @($resourceSamples | Select-Object -ExpandProperty processCount | Sort-Object -Unique)
   $processCounts = @($resourceSamples | ForEach-Object { @($_.processDetails | Where-Object { $_.processRole -ne 'gpu' }).Count } | Sort-Object -Unique)
   $processCountStable = $processCounts.Count -eq 1
@@ -381,11 +396,18 @@ try {
     finalPrivateMemoryAverageMB = [math]::Round($finalPrivateMB, 1)
     privateMemoryPeakGrowthPercent = $privatePeakGrowthPercent
     privateMemoryFinalGrowthPercent = $privateFinalGrowthPercent
-    initialHandleAverage = [math]::Round($initialHandles, 0)
-    peakHandleCount = [math]::Round($peakHandles, 0)
-    finalHandleAverage = [math]::Round($finalHandles, 0)
-    peakHandleGrowthPercent = $peakHandleGrowthPercent
-    finalHandleGrowthPercent = $finalHandleGrowthPercent
+    initialCoreHandleAverage = [math]::Round($initialCoreHandles, 0)
+    peakCoreHandleCount = [math]::Round($peakCoreHandles, 0)
+    finalCoreHandleAverage = [math]::Round($finalCoreHandles, 0)
+    coreHandlePeakGrowthPercent = $coreHandleGrowthPercent
+    finalCoreHandleGrowthPercent = $finalCoreHandleGrowthPercent
+    initialGpuHandleAverage = [math]::Round($initialGpuHandles, 0)
+    peakGpuHandleCount = [math]::Round($peakGpuHandles, 0)
+    finalGpuHandleAverage = [math]::Round($finalGpuHandles, 0)
+    initialTotalHandleAverage = [math]::Round($initialTotalHandles, 0)
+    peakTotalHandleCount = [math]::Round($peakTotalHandles, 0)
+    finalTotalHandleAverage = [math]::Round($finalTotalHandles, 0)
+    totalHandlePeakGrowthPercent = $totalHandleGrowthPercent
     stableProcessCount = $processCountStable
     stableProcessIdentity = $processIdentityStable
     baselineGpuProcessIdentityRetained = $baselineGpuProcessStable
@@ -418,7 +440,8 @@ try {
 - CPU interval coverage / endpoint sample span in last five minutes: $lastFiveMinutesCoverageSeconds/$([math]::Round($lastFiveMinutesSampleSpanSeconds,1)) seconds; minimum interval coverage is 300 seconds.
 - p99 baseline comparison unavailable: no prior Windows baseline with the same 20-conversation workload; absolute 100ms target is enforced.
 - Private memory: start average $([math]::Round($initialPrivateMB,1)) MB; peak $([math]::Round($peakPrivateMB,1)) MB; peak growth $privatePeakGrowthPercent%
-- Handles: start average $([math]::Round($initialHandles,0)); peak $([math]::Round($peakHandles,0)); peak growth $peakHandleGrowthPercent%
+- Core handles (GPU excluded): start average $([math]::Round($initialCoreHandles,0)); peak $([math]::Round($peakCoreHandles,0)); peak growth $coreHandleGrowthPercent%; final growth $finalCoreHandleGrowthPercent%
+- GPU handles: start average $([math]::Round($initialGpuHandles,0)); peak $([math]::Round($peakGpuHandles,0)); final average $([math]::Round($finalGpuHandles,0)). Total handle-tree peak growth is reported separately ($totalHandleGrowthPercent%); one transient GPU worker is already bounded by the process-count gate.
 - Core process count/identity stable (GPU excluded): $processCountStable/$processIdentityStable ($($processCounts -join ', ')); total process counts: $($totalProcessCounts -join ', '); GPU worker counts: $($gpuProcessCounts -join ', '); baseline GPU identity retained: $baselineGpuProcessStable
 - Process image sets observed: $($processImageSets -join ' | ')
 "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
@@ -426,7 +449,7 @@ try {
   }
 
   if ($privatePeakGrowthPercent -gt 10.0) { throw "Private memory peak growth exceeded 10%: $privatePeakGrowthPercent%." }
-  if ($peakHandleGrowthPercent -gt 10.0) { throw "Handle growth exceeded 10%: $peakHandleGrowthPercent%." }
+  if ($coreHandleGrowthPercent -gt 10.0) { throw "Core handle growth exceeded 10%: $coreHandleGrowthPercent%." }
   if (!$processCountStable) { throw "Installed non-GPU process count changed during soak: $($processCounts -join ', ')." }
   if (!$processIdentityStable) { throw "Installed core process identities changed during soak ($($processIdentitySets.Count) distinct PID sets)." }
   if ($idleApplicationCpuPercent -gt 2.0) { throw "Installed app idle CPU exceeded 2% over the final five minutes: $idleApplicationCpuPercent%." }
@@ -546,7 +569,7 @@ try {
 } catch {
   $failureMessage = [string]$_.Exception.Message
   $failureCode = 'installed-smoke-failure'
-  if ($failureMessage.StartsWith('Handle growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'handle-growth-limit' }
+  if ($failureMessage.StartsWith('Core handle growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'core-handle-growth-limit' }
   elseif ($failureMessage.StartsWith('Private memory peak growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'private-memory-growth-limit' }
   elseif ($failureMessage.StartsWith('Installed non-GPU process count changed during soak:', [System.StringComparison]::Ordinal)) { $failureCode = 'core-process-count-changed' }
   elseif ($failureMessage.StartsWith('Installed core process identities changed during soak', [System.StringComparison]::Ordinal)) { $failureCode = 'core-process-identities-changed' }

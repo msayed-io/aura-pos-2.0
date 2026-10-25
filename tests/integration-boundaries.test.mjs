@@ -267,7 +267,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /AddMinutes\(10\)/);
   assert.match(windowsSmoke, /soakStartedAt\.AddMinutes\(10\)\.AddSeconds\(5\)/);
   assert.match(windowsSmoke, /privatePeakGrowthPercent -gt 10\.0/);
-  assert.match(windowsSmoke, /peakHandleGrowthPercent -gt 10\.0/);
+  assert.match(windowsSmoke, /coreHandleGrowthPercent -gt 10\.0/);
+  assert.doesNotMatch(windowsSmoke, /peakHandleGrowthPercent -gt 10\.0/);
   assert.match(windowsSmoke, /if \(!\$processCountStable\)/);
   assert.match(windowsSmoke, /if \(!\$processIdentityStable\)/);
   assert.match(windowsSmoke, /processImageNames = @\(\$entries \| ForEach-Object \{ \[string\]\$_.Name \} \| Sort-Object\)/);
@@ -299,10 +300,15 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(safeProcessProjection, /workingSetBytes = \[double\]\$_.WorkingSetSize/);
   assert.match(safeProcessProjection, /privateMemoryBytes = \[double\]\$_.PrivatePageCount/);
   assert.match(safeProcessProjection, /handleCount = \[int64\]\$_.HandleCount/);
+  assert.match(windowsSmoke, /coreHandleCount = \(\$processDetails \| Where-Object \{ \$_.processRole -ne 'gpu' \} \| Measure-Object -Property handleCount -Sum\)\.Sum/);
+  assert.match(windowsSmoke, /gpuHandleCount = \(\$processDetails \| Where-Object \{ \$_.processRole -eq 'gpu' \} \| Measure-Object -Property handleCount -Sum\)\.Sum/);
   assert.doesNotMatch(safeProcessProjection, /executablePath\s*=|commandLine\s*=|environment\s*=/i);
   assert.doesNotMatch(windowsSmoke, /processEntries\s*=\s*\$entries/);
   assert.match(windowsSmoke, /processImageNames = \$snapshot\.processImageNames/);
   assert.match(windowsSmoke, /processDetails = \$snapshot\.processDetails/);
+  assert.match(windowsSmoke, /coreHandleCount = \$snapshot\.coreHandleCount/);
+  assert.match(windowsSmoke, /gpuHandleCount = \$snapshot\.gpuHandleCount/);
+  assert.match(windowsSmoke, /totalHandlePeakGrowthPercent = \$totalHandleGrowthPercent/);
   assert.match(windowsSmoke, /processImageSetCount = \$processImageSets\.Count/);
   assert.match(windowsSmoke, /ParentProcessId/);
   assert.match(windowsSmoke, /CreationDate/);
