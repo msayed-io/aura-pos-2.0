@@ -219,3 +219,8 @@ Prisma الموجود هو 6.19.3. وثائق Electron الرسمية تذكر �
 في Linux، آخر بوابة كاملة اجتازت `npm test` ‏96/96، وكان p99 لاختبار 20 محادثة في ذلك التشغيل 36.3ms؛ ونجح `npm run typecheck` و`npm run lint` و`npm run build`، ثم `npm run test:standalone` و`npm run test:electron-window` ‏1/1 و`npm run test:whatsapp-qr`. هذه فحوص مصدرية مساعدة وليست بديلاً عن Windows Actions. لم يُنفّذ بعد بناء Windows/تشغيل المثبت أو soak العشر دقائق؛ لم يُنشأ وسم أو Release `v0.2.6` ولم يحدث دمج إلى `master`.
 
 أُعيد `npm run typecheck` و`npm run lint` بعد إضافة soak handshake؛ انتهيا برمز خروج 0، واجتاز Workflow تحليل YAML وفحوص عقد الإصدار وشرط `master` ووسم commit ورفع سجل الموارد حتى عند الفشل. هذه مراجعة محلية فقط؛ تنفيذ PowerShell وتغليف/تشغيل Windows يظلان رهناً بـActions.
+
+
+### أول تشغيل Windows Actions
+
+انتهى التشغيل `40164506904` على commit `7a755617` بفشل `npm test` في اختبار `Gateway timeout aborts slow requests and stops after two retries`؛ على Windows انتهى event loop قبل إطلاق مؤقت `AbortSignal.timeout()` غير المُثبّت، فألغى Node test runner الاختبار. لم يبدأ بناء Next أو installer/installed smoke، وكانت وظيفة النشر `skipped`؛ لم يُنشأ tag أو Release ولم يُدمج `master`. ثُبّت الاختبار بمؤقّت watchdog مرجعي، مع اشتراط رصد abort في المحاولات الثلاث؛ اجتازت النسخة المعدلة `npm test` ‏96/96 و`npm run lint` محلياً. إعادة Windows Actions على التغيير المصحح ما زالت مطلوبة قبل الدمج.

@@ -51,20 +51,32 @@ test('Gateway client rejects a model reply containing an email address', async (
   await assert.rejects(client(payload), error => error.code === 'GATEWAY_INVALID_RESPONSE');
 });
 
-test('Gateway timeout aborts slow requests and stops after two retries', async () => {
+test('Gateway timeout aborts slow requests and stops after two retries', { timeout: 10000 }, async () => {
   let attempts = 0;
+  let abortEvents = 0;
   const client = createGatewayClient({
     gatewayUrl: 'https://gateway.example',
     installToken: 'x'.repeat(64),
-    timeoutMs: 5,
+    timeoutMs: 50,
     fetchImpl: async (_url, options) => {
       attempts += 1;
       return await new Promise((resolve, reject) => {
-        options.signal.addEventListener('abort', () => reject(new Error('timed out')), { once: true });
+        let watchdog;
+        const onAbort = () => {
+          abortEvents += 1;
+          clearTimeout(watchdog);
+          reject(new Error('timed out'));
+        };
+        watchdog = setTimeout(() => {
+          options.signal.removeEventListener('abort', onAbort);
+          reject(new Error('AbortSignal.timeout did not fire'));
+        }, 1000);
+        options.signal.addEventListener('abort', onAbort, { once: true });
       });
     },
     sleep: async () => {},
   });
   await assert.rejects(client(payload), error => error.code === 'GATEWAY_UNAVAILABLE');
   assert.equal(attempts, 3);
+  assert.equal(abortEvents, 3);
 });
