@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const agent = require('../local-services/whatsapp-agent.cjs');
 const TEST_KEY = 'AIzaSySyntheticGeminiTestKey_0123456789';
+const AUTH_TEST_KEY = `AQ.${'B'.repeat(47)}+/=`;
 const answer = { reply: 'أهلاً، كيف أساعدك؟', intent: 'chat', items: [] };
 const providerResponse = () => new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: JSON.stringify(answer) }] } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
 const payload = {
@@ -30,6 +31,28 @@ test('local Gemini request uses stable Flash model and key only in the HTTPS hea
   assert.match(request.body.systemInstruction.parts[0].text, /اسم المساعد: سارة/);
   assert.match(request.body.systemInstruction.parts[0].text, /لا تنشئ إجمالياً/);
   assert.equal(request.body.generationConfig.responseMimeType, 'application/json');
+});
+
+test('local Gemini accepts a synthetic AI Studio authorization key for save and connection-test paths', async () => {
+  agent.configureLocalGeminiApiKey('');
+  assert.deepEqual(agent.configureLocalGeminiApiKey(AUTH_TEST_KEY), { configured: true });
+  let requestCount = 0;
+  try {
+    const result = await agent.testLocalGemini(AUTH_TEST_KEY, {
+      fetchImpl: async (url, options) => {
+        requestCount += 1;
+        assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent');
+        assert.equal(options.headers['x-goog-api-key'], AUTH_TEST_KEY);
+        assert.equal(url.includes(AUTH_TEST_KEY), false);
+        assert.equal(options.body.includes(AUTH_TEST_KEY), false);
+        return providerResponse();
+      },
+    });
+    assert.deepEqual(result, { ok: true, model: 'gemini-3.8-flash' });
+    assert.equal(requestCount, 1);
+  } finally {
+    agent.configureLocalGeminiApiKey('');
+  }
 });
 
 test('local Gemini API key stays in memory only and provider errors never disclose it', async () => {

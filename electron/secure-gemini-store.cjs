@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomBytes } = require('node:crypto');
 
-const KEY_PATTERN = /^[A-Za-z0-9_-]{16,256}$/;
+const KEY_PATTERN = /^(?:[A-Za-z0-9_-]{16,256}|AQ\.[!-~]{13,253})$/;
 
 function validGeminiApiKey(value) {
   return typeof value === 'string' && KEY_PATTERN.test(value);

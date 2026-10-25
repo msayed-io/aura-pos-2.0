@@ -8,6 +8,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { createSecureGeminiStore, validGeminiApiKey } = require('../electron/secure-gemini-store.cjs');
 const API_KEY = 'AIzaSySyntheticTestKey_0123456789';
+const AUTH_API_KEY = `AQ.${'B'.repeat(47)}+/=`;
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'aura-gemini-secret-'));
@@ -37,7 +38,9 @@ test('Gemini key is encrypted at rest and never exposed by the storage status AP
 test('Gemini key can be replaced and removed', t => {
   const { filePath, store } = setup(t);
   store.save(API_KEY);
-  const replacement = 'AIzaSyReplacementTestKey_987654321';
+  const replacement = AUTH_API_KEY;
+  assert.equal(replacement.length, 53);
+  assert.equal(validGeminiApiKey(replacement), true);
   store.save(replacement);
   assert.equal(store.load(), replacement);
   assert.deepEqual(store.clear(), { configured: false });
@@ -47,7 +50,7 @@ test('Gemini key can be replaced and removed', t => {
 
 test('invalid keys and unavailable OS encryption are rejected without persisting a value', t => {
   const { filePath, safeStorage, store } = setup(t);
-  for (const value of ['', 'short', 'contains spaces 123456', 'has\nnewline123456789']) {
+  for (const value of ['', 'short', 'contains spaces 123456', 'has\nnewline123456789', `${AUTH_API_KEY} `]) {
     assert.equal(validGeminiApiKey(value), false);
     assert.throws(() => store.save(value), { message: 'INVALID_GEMINI_API_KEY' });
   }

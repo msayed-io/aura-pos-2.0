@@ -344,6 +344,31 @@ test('only declared WhatsApp preload channels are operational; no generic networ
   assert.match(source, /QRCodeSVG value=\{qrPayload\}/);
 });
 
+test('Gemini UI distinguishes local key-format rejection from a connection failure', async () => {
+  const rejectedKey = 'synthetic invalid key';
+  const api = {
+    onWhatsAppStatus: () => () => {}, onWhatsAppQr: () => () => {}, onWhatsAppPairingCode: () => () => {},
+    getWhatsAppStatus: async () => ({ state: 'idle', qr: null, pairingCode: null }),
+    getGeminiKeyStatus: async () => ({ configured: false, encryptionAvailable: true }),
+    connectWhatsApp: async () => true, pairWhatsApp: async () => true, disconnectWhatsApp: async () => true,
+    saveGeminiApiKey: async () => ({ configured: true }),
+    clearGeminiApiKey: async () => ({ configured: false }),
+    testGeminiApiKey: async () => { throw new Error("Error invoking remote method 'gemini-key:test': Error: INVALID_GEMINI_API_KEY"); },
+  };
+  const h = createHarness(api);
+  let tree = h.render();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  const input = find(tree, node => node.type === 'input' && node.props['aria-label'] === 'مفتاح Gemini API');
+  input.props.onChange({ target: { value: rejectedKey } });
+  tree = h.render();
+  button(tree, 'اختبار الاتصال').props.onClick();
+  await new Promise(resolve => setImmediate(resolve));
+  tree = h.render();
+  assert.match(textOf(tree), /رفض التطبيق صيغة المفتاح محلياً قبل الوصول إلى Google/);
+  assert.doesNotMatch(textOf(tree), /تعذر الاتصال بخدمة Gemini/);
+});
+
 test('Gemini UI tests an unsaved synthetic key, toggles visibility, and confirms local save even when sync is deferred', async () => {
   let savedKey = '';
   const testedKeys = [];

@@ -53,6 +53,7 @@ function geminiSaveErrorMessage(error: unknown): string {
 
 function geminiTestFailureMessage(errorCode?: string): string {
   switch (errorCode) {
+    case 'INVALID_GEMINI_API_KEY': return 'رفض التطبيق صيغة المفتاح محلياً قبل الوصول إلى Google؛ لذلك لا تعني هذه الرسالة وجود مشكلة في الإنترنت.';
     case 'LOCAL_GEMINI_KEY_REJECTED': return 'رفضت Google المفتاح. راجع أنه من Google AI Studio وأنه صالح وغير محذوف.';
     case 'LOCAL_GEMINI_ACCESS_DENIED': return 'المفتاح وصل إلى Google، لكن لا يملك صلاحية استخدام Gemini API أو أن الخدمة غير مفعّلة للمشروع.';
     case 'LOCAL_GEMINI_RATE_LIMITED': return 'المفتاح مقبول، لكن Google أوقفت الطلب مؤقتاً بسبب حد الاستخدام أو الحصة.';
@@ -344,9 +345,12 @@ const BotAIPage: React.FC = () => {
       setGeminiTestStatus(result.ok ? 'success' : 'failed');
       setGeminiTestErrorCode(result.errorCode || '');
       if (result.ok) setAgentSettings(current => ({ ...current, gatewayConfigured: true }));
-    } catch {
+    } catch (error) {
       setGeminiTestStatus('failed');
-      setGeminiTestErrorCode('LOCAL_GEMINI_UNAVAILABLE');
+      const errorMessage = typeof error === 'object' && error !== null && 'message' in error
+        && typeof error.message === 'string' ? error.message : '';
+      setGeminiTestErrorCode(errorMessage.includes('INVALID_GEMINI_API_KEY')
+        ? 'INVALID_GEMINI_API_KEY' : 'LOCAL_GEMINI_UNAVAILABLE');
     } finally {
       setGeminiBusy(false);
     }

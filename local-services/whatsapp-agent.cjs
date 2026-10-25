@@ -13,6 +13,10 @@ const GATEWAY_RETRY_DELAYS = [350, 900];
 const FALLBACK_REPLY = 'عذراً، تعذر معالجة رسالتك الآن. لم يُنشأ أي طلب. سيستطيع أحد الموظفين مساعدتك.';
 const GEMINI_API_MODEL = 'gemini-3.8-flash';
 const GEMINI_API_BASE_URL = 'https://generativelanguage.googleapis.com';
+const GEMINI_API_KEY_PATTERN = /^(?:[A-Za-z0-9_-]{16,256}|AQ\.[!-~]{13,253})$/;
+function validGeminiApiKey(value) {
+  return typeof value === 'string' && GEMINI_API_KEY_PATTERN.test(value);
+}
 const DEFAULT_AGENT_PERSONALITY = Object.freeze({ botName: 'مساعد Aura POS', businessName: '', tone: 'friendly', replyLength: 'short', instructions: '', useEmoji: false });
 let localGeminiApiKey = null;
 const EXPLICIT_CONFIRMATION = /^(?:تأكيد|تأكيد الطلب|أؤكد|أؤكد الطلب|أكد الطلب|confirm|confirm order)$/iu;
@@ -171,7 +175,7 @@ function configureLocalGeminiApiKey(apiKey) {
     localGeminiApiKey = null;
     return { configured: false };
   }
-  if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(apiKey)) throw new WhatsAppAgentError('INVALID_GEMINI_API_KEY');
+  if (!validGeminiApiKey(apiKey)) throw new WhatsAppAgentError('INVALID_GEMINI_API_KEY');
   localGeminiApiKey = apiKey;
   return { configured: true };
 }
@@ -204,7 +208,7 @@ function buildLocalSystemPrompt(personality = DEFAULT_AGENT_PERSONALITY) {
 const LOCAL_GEMINI_SYSTEM_PROMPT = 'أنت مساعد طلبات لمتجر. أجب باللغة المناسبة لرسائل العميل، باختصار وتهذيب. استخدم المنيو والسياق المعطى فقط ولا تخترع أصنافاً. قد يحتوي المنيو على أسعار محلية للاستدلال على الأصناف المناسبة، لكن لا تذكر أي سعر أو مبلغ في reply ولا تنشئ إجمالياً؛ التطبيق يحسب الأسعار والإجمالي محلياً ويتجاهل أي سعر صادر عنك. لا تطلب أو تكشف أرقام هواتف أو معرفات شخصية. عند update_draft أو request_confirmation يجب أن تكون items هي القائمة الكاملة النهائية للمسودة؛ لا تحذف صنفاً إلا إذا طلب العميل ذلك بوضوح. استعمل orderDetails فقط للمعلومات التي ذكرها العميل. لا تنشئ طلبات ولا تدّعِ إتمامها. التطبيق يتحقق مستقلاً من رسالة تأكيد صريحة بعد أحدث ملخص. أعد JSON فقط وفق المخطط المحدد.';
 
 async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKey = localGeminiApiKey, timeoutMs = 15000 } = {}) {
-  if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(apiKey) || typeof fetchImpl !== 'function') {
+  if (!validGeminiApiKey(apiKey) || typeof fetchImpl !== 'function') {
     throw new WhatsAppAgentError('LOCAL_GEMINI_NOT_CONFIGURED');
   }
   const url = `${GEMINI_API_BASE_URL}/v1beta/models/${GEMINI_API_MODEL}:generateContent`;
@@ -271,7 +275,7 @@ async function requestLocalGemini(payload, { fetchImpl = globalThis.fetch, apiKe
 }
 
 async function testLocalGemini(apiKey = localGeminiApiKey, { fetchImpl = globalThis.fetch } = {}) {
-  if (typeof apiKey !== 'string' || !/^[A-Za-z0-9_-]{16,256}$/.test(apiKey)) {
+  if (!validGeminiApiKey(apiKey)) {
     return { ok: false, model: GEMINI_API_MODEL, errorCode: 'LOCAL_GEMINI_NOT_CONFIGURED' };
   }
   const payload = {
