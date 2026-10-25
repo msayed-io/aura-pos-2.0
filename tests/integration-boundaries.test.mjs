@@ -268,6 +268,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /CreationDate/);
   assert.match(windowsSmoke, /KernelModeTime/);
   assert.match(windowsSmoke, /PrivatePageCount/);
+  assert.match(windowsSmoke, /retrySnapshot = Get-InstalledProcessSnapshot/);
+  assert.match(windowsSmoke, /Application process tree changed during CPU sampling/);
+  assert.match(windowsSmoke, /WMI CPU counters regressed after a stable-process retry/);
   assert.match(windowsSmoke, /\$nextSampleAt = \$now\.AddSeconds\(2\)/);
   assert.match(windowsSmoke, /cpuIntervalStartUtc = \$lastSampleAt\.ToUniversalTime\(\)\.ToString\('o'\)/);
   assert.match(windowsSmoke, /observedProcessIdentities\.Contains/);

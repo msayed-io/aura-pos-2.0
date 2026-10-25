@@ -207,7 +207,22 @@ try {
     $now = Get-Date
     $elapsed = [math]::Max(0.1, ($now - $lastSampleAt).TotalSeconds)
     $cpuDeltaSeconds = $snapshot.cpuSeconds - $lastSnapshot.cpuSeconds
-    if ($cpuDeltaSeconds -lt 0) { throw 'Application process CPU counters regressed during the soak.' }
+    if ($cpuDeltaSeconds -lt 0) {
+      $previousIdentityKey = @($lastSnapshot.processIdentities | Sort-Object) -join ','
+      $retrySnapshot = Get-InstalledProcessSnapshot
+      foreach ($identity in $retrySnapshot.processIdentities) { [void]$observedProcessIdentities.Add([string]$identity) }
+      $retryIdentityKey = @($retrySnapshot.processIdentities | Sort-Object) -join ','
+      if ($retryIdentityKey -ne $previousIdentityKey) {
+        $addedProcessCount = @($retrySnapshot.processIdentities | Where-Object { $lastSnapshot.processIdentities -notcontains $_ }).Count
+        $removedProcessCount = @($lastSnapshot.processIdentities | Where-Object { $retrySnapshot.processIdentities -notcontains $_ }).Count
+        throw "Application process tree changed during CPU sampling (added=$addedProcessCount; removed=$removedProcessCount); CPU deltas are not comparable."
+      }
+      $now = Get-Date
+      $elapsed = [math]::Max(0.1, ($now - $lastSampleAt).TotalSeconds)
+      $cpuDeltaSeconds = $retrySnapshot.cpuSeconds - $lastSnapshot.cpuSeconds
+      if ($cpuDeltaSeconds -lt 0) { throw "WMI CPU counters regressed after a stable-process retry (previous=$([math]::Round($lastSnapshot.cpuSeconds, 3)); current=$([math]::Round($retrySnapshot.cpuSeconds, 3)))." }
+      $snapshot = $retrySnapshot
+    }
     $cpuPercent = ($cpuDeltaSeconds / $elapsed / $cpuCount) * 100
     $systemCpuValues = @(Get-CimInstance Win32_Processor | Where-Object { $null -ne $_.LoadPercentage } | Select-Object -ExpandProperty LoadPercentage)
     $systemCpuPercent = if ($systemCpuValues.Count -gt 0) { [math]::Round((($systemCpuValues | Measure-Object -Average).Average), 2) } else { $null }
