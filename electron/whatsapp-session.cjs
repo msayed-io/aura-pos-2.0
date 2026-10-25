@@ -4,7 +4,7 @@
 const { EventEmitter } = require('node:events');
 const fs = require('node:fs/promises');
 const path = require('node:path');
-const { OutboundReplyQueue, NON_TEXT_REPLY, isDirectJid, extractPlainText } = require('./whatsapp-messaging.cjs');
+const { OutboundReplyQueue, isDirectJid, extractPlainText, validReply } = require('./whatsapp-messaging.cjs');
 
 const STATES = new Set(['idle', 'connecting', 'qr', 'connected', 'reconnecting', 'needs-attention', 'paused', 'stopping', 'stopped']);
 const SAFE_ERROR_CODES = new Set([
@@ -77,6 +77,7 @@ class WhatsAppSession extends EventEmitter {
       sleep,
       isCurrent: socket => this.socket === socket && this.state === 'connected' && !this.suspended,
       onError: code => this.report(code),
+      onStatus: (replyId, status) => this.emit('reply-status', { replyId, status }),
     });
   }
 
@@ -305,14 +306,14 @@ class WhatsAppSession extends EventEmitter {
       if (key?.fromMe === true || !isDirectJid(jid) || typeof messageId !== 'string' || messageId.length === 0 || messageId.length > 128) continue;
       if (!this.rememberMessage(`${jid}\u0000${messageId}`)) continue;
       const text = extractPlainText(message.message);
-      if (text !== null) {
-        if (text.length <= 8192) this.emit('text-message', { messageId, jid, text });
-        continue;
-      }
-      this.outbound.enqueue(socket, jid, NON_TEXT_REPLY, messageId);
+      if (text !== null && text.length <= 8192) this.emit('text-message', { messageId, jid, text });
     }
   }
 
+  reply(replyId, jid, text) {
+    if (!validReply(replyId, jid, text) || this.state !== 'connected' || !this.socket || this.suspended || this.stopped) return false;
+    return this.outbound.enqueue(this.socket, replyId, jid, text);
+  }
   async disconnect() {
     if (this.stopped) return false;
     this.desired = false;

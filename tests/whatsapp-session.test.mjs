@@ -11,7 +11,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const localRequire = createRequire(import.meta.url);
 const runtimeRequire = createRequire(path.join(root, 'electron', 'whatsapp-runtime', 'package.json'));
 const { WhatsAppSession } = localRequire('../electron/whatsapp-session.cjs');
-const { OutboundReplyQueue, NON_TEXT_REPLY, isDirectJid, extractPlainText } = localRequire('../electron/whatsapp-messaging.cjs');
+const { OutboundReplyQueue, isDirectJid, extractPlainText, validReply, replyMessageId } = localRequire('../electron/whatsapp-messaging.cjs');
 const { DisconnectReason } = runtimeRequire('@whiskeysockets/baileys');
 const tick = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 
@@ -31,7 +31,7 @@ async function makeHarness(t, { registered = false, authSequence, now = Date.now
         sent: [],
         presence: [],
         async sendPresenceUpdate(state, jid) { this.presence.push({ state, jid }); },
-        async sendMessage(jid, content) { this.sent.push({ jid, content }); return { key: { id: 'fixture-send' } }; },
+        async sendMessage(jid, content, options) { this.sent.push({ jid, content, options }); if (this.failSend) throw new Error('fixture failure'); return { key: { id: 'fixture-send' } }; },
         async logout() {},
         end() {},
       };
@@ -185,7 +185,7 @@ test('resume rebuilds a formerly active socket without deleting local credential
   await h.manager.stop();
 });
 
-test('notify-only direct-message filter ignores self, group, status, channel and history events', async t => {
+test('notify-only direct-message filter emits text only and silently ignores groups, status, channels, media and history', async t => {
   const h = await makeHarness(t);
   await h.manager.connect();
   const socket = h.sockets[0];
@@ -207,10 +207,8 @@ test('notify-only direct-message filter ignores self, group, status, channel and
   ] });
   await tick(20);
   assert.deepEqual(texts.map(item => item.text), ['hello from customer']);
-  assert.equal(socket.sent.length, 1);
-  assert.equal(socket.sent[0].jid, direct.remoteJid);
-  assert.deepEqual(socket.sent[0].content, { text: NON_TEXT_REPLY });
-  assert.deepEqual(socket.presence.map(item => item.state), ['composing', 'paused']);
+  assert.equal(socket.sent.length, 0);
+  assert.deepEqual(texts[0], { messageId: 'text-1', jid: direct.remoteJid, text: 'hello from customer' });
   await h.manager.stop();
 });
 
@@ -218,6 +216,7 @@ test('message parser accepts plain and extended text only; direct-JID boundary e
   assert.equal(extractPlainText({ conversation: 'plain' }), 'plain');
   assert.equal(extractPlainText({ extendedTextMessage: { text: 'extended' } }), 'extended');
   assert.equal(extractPlainText({ ephemeralMessage: { message: { conversation: 'wrapped' } } }), 'wrapped');
+  assert.equal(extractPlainText({ viewOnceMessage: { message: { conversation: 'hidden' } } }), null);
   assert.equal(extractPlainText({ imageMessage: { caption: 'not text-only' } }), null);
   assert.equal(isDirectJid('customer@s.whatsapp.net'), true);
   assert.equal(isDirectJid('opaque@lid'), true);
@@ -229,7 +228,7 @@ test('central outbound queue serializes composing/send/paused and enforces a glo
   const events = [];
   const socket = {
     async sendPresenceUpdate(state, jid) { events.push({ type: state, jid }); },
-    async sendMessage(jid, content) { sent.push({ jid, content }); },
+    async sendMessage(jid, content, options) { sent.push({ jid, content, options }); },
   };
   const queue = new OutboundReplyQueue({
     now: () => 1000,
@@ -241,10 +240,29 @@ test('central outbound queue serializes composing/send/paused and enforces a glo
     delayRangeMs: 0,
     globalLimit: 1,
   });
-  assert.equal(queue.enqueue(socket, 'a@s.whatsapp.net', 'fixed reply', 'inbound-1'), true);
-  assert.equal(queue.enqueue(socket, 'b@s.whatsapp.net', 'fixed reply', 'inbound-2'), false);
+  assert.equal(queue.enqueue(socket, 'inbound-1', 'a@s.whatsapp.net', 'fixed reply'), true);
+  assert.equal(queue.enqueue(socket, 'inbound-2', 'b@s.whatsapp.net', 'fixed reply'), false);
   await queue.drainPromise;
   assert.deepEqual(events.map(item => item.type), ['composing', 'paused']);
-  assert.deepEqual(sent, [{ jid: 'a@s.whatsapp.net', content: { text: 'fixed reply' } }]);
+  assert.deepEqual(sent, [{ jid: 'a@s.whatsapp.net', content: { text: 'fixed reply' }, options: { messageId: replyMessageId('inbound-1') } }]);
+  queue.stop();
+});
+
+test('reply validation is bounded and queue emits redacted sent/failed statuses', async () => {
+  assert.equal(validReply('r-1', 'a@s.whatsapp.net', 'reply'), true);
+  assert.equal(validReply('x'.repeat(129), 'a@s.whatsapp.net', 'reply'), false);
+  assert.equal(validReply('r-1', 'group@g.us', 'reply'), false);
+  assert.equal(validReply('r-1', 'a@s.whatsapp.net', 'x'.repeat(8193)), false);
+  const expected = `3EB0${(await import('node:crypto')).createHash('sha256').update('r-1').digest('hex').toUpperCase().slice(0, 18)}`;
+  assert.equal(replyMessageId('r-1'), expected);
+  const statuses = []; const errors = []; const sentOptions = [];
+  const socket = { async sendPresenceUpdate() {}, async sendMessage(jid, content, options) { sentOptions.push(options); if (jid.startsWith('bad')) throw new Error('private details'); } };
+  const queue = new OutboundReplyQueue({ now: () => 1, sleep: async () => {}, minimumDelayMs: 0, delayRangeMs: 0, isCurrent: () => true, onError: code => errors.push(code), onStatus: (replyId, status) => statuses.push({ replyId, status }) });
+  assert.equal(queue.enqueue(socket, 'reply-good', 'good@s.whatsapp.net', 'secret reply'), true);
+  assert.equal(queue.enqueue(socket, 'reply-bad', 'bad@s.whatsapp.net', 'secret reply'), true);
+  await queue.drainPromise;
+  assert.deepEqual(statuses, [{ replyId: 'reply-good', status: 'sent' }, { replyId: 'reply-bad', status: 'failed' }]);
+  assert.deepEqual(errors, ['OUTBOUND_SEND_FAILED']);
+  assert.deepEqual(sentOptions, [{ messageId: replyMessageId('reply-good') }, { messageId: replyMessageId('reply-bad') }]);
   queue.stop();
 });

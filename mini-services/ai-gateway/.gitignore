@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+
+# Keep service tests despite the repository-wide generated test directory rule.
+!test/
+!test/*.test.mjs

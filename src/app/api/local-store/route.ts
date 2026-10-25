@@ -11,6 +11,24 @@ const envelopeSchema = z.object({
   payload: z.unknown().optional(),
 }).strict();
 const responseHeaders = { 'Cache-Control': 'no-store' };
+const RENDERER_WHATSAPP_ACTIONS = new Set([
+  'whatsapp.agent.settings.get', 'whatsapp.agent.settings.set',
+  'whatsapp.conversation.list', 'whatsapp.conversation.resume', 'whatsapp.conversation.handoff',
+]);
+
+function isGatewayConfigured(): boolean {
+  const rawUrl = process.env.AURA_AI_GATEWAY_URL;
+  const token = process.env.AURA_AI_INSTALL_TOKEN;
+  if (typeof rawUrl !== 'string' || rawUrl.length > 2048 || typeof token !== 'string' || token.length < 32 || token.length > 512) return false;
+  try {
+    const url = new URL(rawUrl);
+    const localHost = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+    return !url.username && !url.password && !url.search && !url.hash
+      && (url.protocol === 'https:' || (process.env.NODE_ENV !== 'production' && localHost && url.protocol === 'http:'));
+  } catch {
+    return false;
+  }
+}
 
 class RequestError extends Error {
   constructor(readonly code: string, readonly status: number, message: string) {
@@ -72,9 +90,20 @@ export async function POST(request: NextRequest) {
     }
     const parsed = envelopeSchema.safeParse(await readLimitedJson(request));
     if (!parsed.success) throw new RequestError('INVALID_REQUEST', 400, 'صيغة العملية غير صالحة.');
+    if (parsed.data.action.startsWith('whatsapp.') && !RENDERER_WHATSAPP_ACTIONS.has(parsed.data.action)) {
+      throw new RequestError('ACTION_NOT_ALLOWED', 403, 'هذه العملية متاحة لخدمة التطبيق المحلية فقط.');
+    }
+    const gatewayConfigured = isGatewayConfigured();
+    const settingPayload = parsed.data.payload && typeof parsed.data.payload === 'object'
+      ? parsed.data.payload as Record<string, unknown> : {};
+    if (parsed.data.action === 'whatsapp.agent.settings.set' && settingPayload.enabled === true && !gatewayConfigured) {
+      throw new RequestError('GATEWAY_NOT_CONFIGURED', 409, 'لم يتم إعداد بوابة الذكاء الاصطناعي بأمان بعد.');
+    }
     await localStore.initialize();
     const data = await localStore.dispatch(parsed.data.action, parsed.data.payload);
-    return NextResponse.json({ ok: true, data }, { headers: responseHeaders });
+    const safeData = parsed.data.action === 'whatsapp.agent.settings.get' && data && typeof data === 'object'
+      ? { ...data, gatewayConfigured } : data;
+    return NextResponse.json({ ok: true, data: safeData }, { headers: responseHeaders });
   } catch (error) {
     const failure = error instanceof RequestError
       ? { code: error.code, message: error.message, status: error.status }

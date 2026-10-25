@@ -6,6 +6,7 @@ import {
   AlertCircle, Phone, Clock, Settings, Search, Sparkles, ArrowRight, Save, Plus,
 } from 'lucide-react';
 import { QRCodeSVG } from 'qrcode.react';
+import { localStoreClient } from '@/aura/services/localStoreClient';
 
 type ConnectionState = 'idle' | 'connecting' | 'qr' | 'connected' | 'reconnecting' | 'needs-attention' | 'paused' | 'stopping' | 'stopped';
 
@@ -13,6 +14,7 @@ const inputClass = 'w-full px-4 py-3 border border-gray-200 rounded-lg bg-white 
 const buttonClass = 'flex items-center justify-center gap-2 px-4 py-3 bg-neo-primary text-white font-semibold rounded-lg text-sm disabled:opacity-50 disabled:cursor-not-allowed min-h-[44px]';
 const days = ['الأحد', 'الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
 const unavailable = 'غير متاح حتى إضافة المحرك المحلي';
+const AGENT_CONSENT_TEXT = 'هذه الخدمة تعتمد على ربط غير رسمي مع واتساب (WhatsApp Web) وليست منتجاً رسمياً من واتساب أو Meta، وقد يؤدي مخالفة شروط واتساب إلى تقييد الرقم المرتبط أو تعطيله، لذا يُنصح باستخدام رقم مخصص للمطعم. كما تُرسَل نصوص رسائل العملاء إلى خادم الذكاء الاصطناعي الخاص بنا ومزوّد النموذج لمعالجتها. باستمرارك فأنت تقرّ بفهم ذلك وتتحمل مسؤولية الاستخدام.';
 const connectionLabels: Record<ConnectionState, string> = {
   idle: 'غير متصل — الخدمة جاهزة لبدء الربط',
   connecting: 'جارٍ الاتصال بخوادم WhatsApp',
@@ -25,17 +27,23 @@ const connectionLabels: Record<ConnectionState, string> = {
   stopped: 'الخدمة متوقفة',
 };
 
-const ScaffoldNotice = () => (
+const AgentInfoNotice = () => (
   <div role="status" className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-200 rounded-xl">
     <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
     <div>
-      <p className="text-sm font-semibold text-amber-800">الربط المحلي متاح — مساعد الذكاء الاصطناعي غير مضاف</p>
+      <p className="text-sm font-semibold text-amber-800">الربط المحلي جاهز — الوكيل لا يعمل إلا بعد إعداد Gateway وموافقتك</p>
       <p className="text-xs text-amber-700 mt-1">
-        تُحفظ جلسة WhatsApp محلياً على هذا الجهاز. لم يُضف المساعد أو الردود النصية بعد؛ إعدادات التوليد والحفظ ورفع الملفات غير متاحة.
+        تُحفظ جلسة WhatsApp والطلبات محلياً. لا يُرسل رد آلي ولا يُنشأ طلب قبل تفعيلك، ولا يُعتمد الطلب أو يطبع إلا بعد تأكيد صريح من العميل.
       </p>
     </div>
   </div>
 );
+
+type AgentSettings = { enabled: boolean; consentVersion: string | null; consentAcceptedAt: number | null; gatewayConfigured: boolean };
+type AgentConversation = {
+  conversationId: string; state: 'active' | 'needs_staff'; timestamp: number;
+  draft: { status: string; version: number; itemCount: number; total: number; deliveryFeePending?: boolean } | null;
+};
 
 const SectionCard = ({ title, icon, children }: {
   title: string; icon: React.ReactNode; children: React.ReactNode;
@@ -74,26 +82,42 @@ const BotAIPage: React.FC = () => {
   const [businessHoursExpanded, setBusinessHoursExpanded] = useState(false);
   const [quickRepliesExpanded, setQuickRepliesExpanded] = useState(false);
   const [manualEntryExpanded, setManualEntryExpanded] = useState(false);
+  const [agentSettings, setAgentSettings] = useState<AgentSettings>({ enabled: false, consentVersion: null, consentAcceptedAt: null, gatewayConfigured: false });
+  const [consentAcknowledged, setConsentAcknowledged] = useState(false);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState('');
+  const [conversations, setConversations] = useState<AgentConversation[]>([]);
+  const [conversationBusy, setConversationBusy] = useState('');
 
   useEffect(() => {
     const api = window.electronAPI;
-    if (!api) return undefined;
     let active = true;
-    const unsubscribeStatus = api.onWhatsAppStatus(payload => {
+    const unsubscribeStatus = api?.onWhatsAppStatus(payload => {
       if (!active) return;
       setConnectionStatus(payload.state);
       if (payload.state !== 'qr') setQrPayload(null);
     });
-    const unsubscribeQr = api.onWhatsAppQr(payload => { if (active) setQrPayload(payload); });
-    void api.getWhatsAppStatus().then(snapshot => {
+    const unsubscribeQr = api?.onWhatsAppQr(payload => { if (active) setQrPayload(payload); });
+    if (api) {
+      void api.getWhatsAppStatus().then(snapshot => {
+        if (!active) return;
+        setConnectionStatus(snapshot.state);
+        setQrPayload(snapshot.state === 'qr' ? snapshot.qr : null);
+      }).catch(() => { if (active) setConnectionError('تعذر قراءة حالة الاتصال من التطبيق.'); });
+    }
+    void Promise.all([
+      localStoreClient.call<AgentSettings>('whatsapp.agent.settings.get'),
+      localStoreClient.call<AgentConversation[]>('whatsapp.conversation.list'),
+    ]).then(([settings, rows]) => {
       if (!active) return;
-      setConnectionStatus(snapshot.state);
-      setQrPayload(snapshot.state === 'qr' ? snapshot.qr : null);
-    }).catch(() => { if (active) setConnectionError('تعذر قراءة حالة الاتصال من التطبيق.'); });
+      setAgentSettings(settings);
+      setConsentAcknowledged(settings.consentVersion === '1' && Boolean(settings.consentAcceptedAt));
+      setConversations(rows);
+    }).catch(() => { if (active) setAgentError('تعذر قراءة إعدادات الوكيل من قاعدة البيانات المحلية.'); });
     return () => {
       active = false;
-      unsubscribeStatus();
-      unsubscribeQr();
+      unsubscribeStatus?.();
+      unsubscribeQr?.();
     };
   }, []);
 
@@ -128,6 +152,53 @@ const BotAIPage: React.FC = () => {
     }
   };
 
+  const setAgentEnabled = async (enabled: boolean) => {
+    if (enabled && !consentAcknowledged) {
+      setAgentError('اقرأ إشعار الخصوصية ووافق عليه أولاً.');
+      return;
+    }
+    if (enabled && !agentSettings.gatewayConfigured) {
+      setAgentError('بوابة الذكاء الاصطناعي غير مهيأة؛ لم يتم تفعيل الوكيل.');
+      return;
+    }
+    if (enabled && !agentSettings.consentAcceptedAt && !window.confirm(AGENT_CONSENT_TEXT)) {
+      setAgentError('لم يتم تفعيل الوكيل لأن الموافقة لم تُقبل.');
+      return;
+    }
+    setAgentBusy(true);
+    setAgentError('');
+    try {
+      const updated = await localStoreClient.call<AgentSettings>('whatsapp.agent.settings.set', {
+        enabled,
+        ...(enabled ? { consentVersion: '1' } : {}),
+      });
+      setAgentSettings(current => ({ ...current, ...updated }));
+      if (enabled) setConsentAcknowledged(true);
+    } catch {
+      setAgentError(enabled ? 'تعذر تفعيل الوكيل. لم يتم إرسال رد أو إنشاء طلب.' : 'تعذر إيقاف الوكيل المحلي.');
+    } finally {
+      setAgentBusy(false);
+    }
+  };
+
+  const refreshConversations = async () => {
+    const rows = await localStoreClient.call<AgentConversation[]>('whatsapp.conversation.list');
+    setConversations(rows);
+  };
+
+  const setConversationState = async (conversationId: string, action: 'whatsapp.conversation.handoff' | 'whatsapp.conversation.resume') => {
+    setConversationBusy(conversationId);
+    setAgentError('');
+    try {
+      await localStoreClient.call(action, { conversationId });
+      await refreshConversations();
+    } catch {
+      setAgentError('تعذر تحديث حالة المحادثة.');
+    } finally {
+      setConversationBusy('');
+    }
+  };
+
   if (view === 'personality') {
     return (
       <div className="flex flex-col gap-5" dir="rtl">
@@ -140,7 +211,7 @@ const BotAIPage: React.FC = () => {
             <Sparkles className="w-6 h-6 text-neo-primary" />شخصية البوت
           </h1>
         </div>
-        <ScaffoldNotice />
+        <AgentInfoNotice />
         <SectionCard title="المعلومات الأساسية" icon={<Bot className="w-5 h-5 text-neo-primary" />}>
           <InactiveControls>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -215,7 +286,7 @@ const BotAIPage: React.FC = () => {
         <h1 className="text-2xl font-bold text-neo-secondary flex items-center gap-2"><Bot className="w-7 h-7 text-neo-primary" />البوت والذكاء الاصطناعي</h1>
         <p className="text-sm text-neo-secondary/50 mt-1">إعدادات واتساب بوت، الرد التلقائي، وقاعدة المعرفة</p>
       </div>
-      <ScaffoldNotice />
+      <AgentInfoNotice />
       <section className="bg-white rounded-xl border border-gray-200 p-5">
         <div className="flex items-center gap-4">
           <div className="w-10 h-10 rounded-lg bg-neo-primary/10 flex items-center justify-center flex-shrink-0"><Sparkles className="w-5 h-5 text-neo-primary" /></div>
@@ -294,7 +365,33 @@ const BotAIPage: React.FC = () => {
       <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         <div className="p-5 border-b border-gray-100 flex items-center gap-3"><Settings className="w-5 h-5 text-neo-primary" /><h2 className="text-base font-bold text-neo-secondary">لوحة التحكم</h2></div>
         <div className="p-5 space-y-4">
-          <div className="p-4 bg-gray-50 rounded-xl"><InactiveToggle label="الرد التلقائي" /><p className="text-xs text-neo-secondary/40 mt-2">الرد على رسائل واتساب غير متاح حالياً</p></div>
+          <div className="p-4 bg-gray-50 rounded-xl space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-neo-secondary">وكيل الطلبات بالذكاء الاصطناعي</p>
+                <p className="text-xs text-neo-secondary/60 mt-1">{agentSettings.enabled ? 'مفعّل بعد موافقتك' : 'متوقف'}</p>
+              </div>
+              {agentSettings.enabled ? (
+                <button type="button" onClick={() => { void setAgentEnabled(false); }} disabled={agentBusy}
+                  className="px-4 py-2 border border-red-200 text-red-600 rounded-lg text-sm font-semibold disabled:opacity-50">إيقاف الوكيل</button>
+              ) : (
+                <button type="button" onClick={() => { void setAgentEnabled(true); }} disabled={agentBusy || !consentAcknowledged || !agentSettings.gatewayConfigured}
+                  className={`${buttonClass} py-2.5`}>تفعيل الوكيل</button>
+              )}
+            </div>
+            <p className="text-xs text-neo-secondary/70 leading-6">
+              عند التفعيل قد تُرسل نصوص الرسائل وسياق المسودة ولقطة من المنيو تشمل الأسعار والتوفر إلى Gateway خارجية تستخدم Gemini. تُحجب أرقام الهواتف ومعرّفات WhatsApp، وقد تتضمن الرسائل عناوين أو معلومات شخصية أخرى. لا يُعتمد على أي سعر يخرجه النموذج؛ يُحسب الملخص من قاعدة البيانات المحلية ولا يُنشأ أو يُطبع طلب قبل تأكيد العميل الصريح.
+            </p>
+            <label className="flex items-start gap-3 text-sm text-neo-secondary cursor-pointer">
+              <input type="checkbox" className="mt-1 h-4 w-4 accent-neo-primary" checked={consentAcknowledged}
+                onChange={event => setConsentAcknowledged(event.target.checked)} disabled={agentSettings.enabled || agentBusy} />
+              <span>أوافق على إرسال محتوى الرسائل اللازمة إلى بوابة الذكاء الاصطناعي لمعالجة الطلبات، بعد الاطلاع على التنبيه أعلاه.</span>
+            </label>
+            <p className="text-xs text-neo-secondary/60" role="status">
+              حالة Gateway: {agentSettings.gatewayConfigured ? 'الإعداد موجود' : 'غير مهيأ — لن يُفعّل الوكيل'}
+            </p>
+            {agentError && <p role="alert" className="text-sm text-red-600">{agentError}</p>}
+          </div>
           <div className="border border-gray-200 rounded-xl overflow-hidden">
             <button type="button" onClick={() => setBusinessHoursExpanded(!businessHoursExpanded)} aria-expanded={businessHoursExpanded} aria-controls="bot-business-hours" className="w-full flex items-center justify-between p-4 bg-gray-50 hover:bg-gray-100">
               <span className="flex items-center gap-3 text-sm font-semibold"><Clock className="w-5 h-5 text-neo-primary" />ساعات العمل</span><ChevronDown className={`w-4 h-4 ${businessHoursExpanded ? 'rotate-180' : ''}`} />
@@ -338,6 +435,32 @@ const BotAIPage: React.FC = () => {
               <p className="text-xs text-neo-secondary/40">التحكم في سرعة الإرسال غير متاح حالياً</p>
             </InactiveControls>
           </div>
+        </div>
+      </section>
+      <section className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+          <MessageSquare className="w-5 h-5 text-neo-primary" /><h2 className="text-base font-bold text-neo-secondary">محادثات واتساب</h2>
+        </div>
+        <div className="p-5 space-y-3">
+          {conversations.length === 0 ? (
+            <p className="text-sm text-neo-secondary/50">لا توجد محادثات محلية حتى الآن.</p>
+          ) : conversations.map(conversation => (
+            <div key={conversation.conversationId} className="flex flex-wrap items-center justify-between gap-3 border border-gray-100 rounded-lg p-3">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-neo-secondary">محادثة محلية •••{conversation.conversationId.slice(-6)}</p>
+                <p className="text-xs text-neo-secondary/60 mt-1">
+                  {conversation.state === 'needs_staff' ? 'تنتظر موظفاً' : 'نشطة'}
+                  {conversation.draft ? ` · مسودة ${conversation.draft.itemCount} أصناف · ${conversation.draft.deliveryFeePending ? 'رسوم التوصيل غير محسوبة' : `${Number(conversation.draft.total || 0).toLocaleString('ar-EG')} ج.م`}` : ''}
+                </p>
+              </div>
+              <button type="button" disabled={conversationBusy === conversation.conversationId}
+                onClick={() => { void setConversationState(conversation.conversationId, conversation.state === 'needs_staff' ? 'whatsapp.conversation.resume' : 'whatsapp.conversation.handoff'); }}
+                className="px-3 py-2 border border-gray-200 rounded-lg text-xs font-semibold text-neo-primary disabled:opacity-50">
+                {conversation.state === 'needs_staff' ? 'استئناف الوكيل' : 'تحويل لموظف'}
+              </button>
+            </div>
+          ))}
+          {agentError && <p role="alert" className="text-sm text-red-600">{agentError}</p>}
         </div>
       </section>
     </div>

@@ -25,6 +25,7 @@ test('only local base, health and the same-origin storage API routes are exposed
   assert.deepEqual(filesIn('src/app/api').filter((file) => /\/route\.[jt]s$/.test(file)).sort(), [
     'src/app/api/health/route.ts',
     'src/app/api/internal/shutdown/route.ts',
+    'src/app/api/internal/whatsapp/route.ts',
     'src/app/api/local-store/route.ts',
     'src/app/api/route.ts',
   ]);
@@ -110,7 +111,9 @@ test('packaged app copies the isolated WhatsApp runtime to resources and the wor
 
 test('WhatsApp worker defers commands until local auth initialization settles', () => {
   const worker = read('electron/whatsapp-service.cjs');
-  assert.match(worker, /createSerialCommandQueue\(async command => \{\s*await initializationPromise;\s*return runCommand\(command\);\s*\}\)/);
+  assert.match(worker, /createSerialCommandQueue\(async message => \{\s*await initializationPromise;\s*return runCommand\(message\);\s*\}\)/);
+  assert.match(worker, /message\.command === 'reply'.*replyId.*jid.*text/s);
+  assert.match(read('electron/service-supervisor.cjs'), /reply\(replyId, jid, text\)/);
   assert.match(worker, /initializationPromise = session\.initialize\(\);\s*await initializationPromise;/);
 });
 
@@ -133,7 +136,7 @@ test('Bot UI is wired to settings and caller types without restoring removed eng
     'src/app/api/wakz-webhook/route.ts',
   ]) assert.equal(fs.existsSync(path.join(root, file)), false, `${file} must stay removed`);
   for (const file of filesIn('src').filter(file => /\.[jt]sx?$/.test(file))) {
-    assert.doesNotMatch(read(file), /wakz|gemini|generativelanguage\.googleapis|@google\/generative-ai/i, `Legacy provider path in ${file}`);
+    assert.doesNotMatch(read(file), /(?:import\s+[^\n;]*(?:wakz|gemini)|require\(['"][^'"]*(?:wakz|gemini)|generativelanguage\.googleapis|@google\/generative-ai)/i, `Legacy provider path in ${file}`);
   }
   const pkg = JSON.parse(read('package.json'));
   const dependencies = { ...pkg.dependencies, ...pkg.devDependencies, ...pkg.optionalDependencies };
@@ -143,4 +146,44 @@ test('Bot UI is wired to settings and caller types without restoring removed eng
   const runtimeLock = JSON.parse(read('electron/whatsapp-runtime/package-lock.json'));
   assert.equal(runtime.dependencies['@whiskeysockets/baileys'], '6.7.24');
   assert.equal(runtimeLock.packages['node_modules/@whiskeysockets/baileys'].version, '6.7.24');
+});
+
+test('AI Gateway stays outside the EXE and only the internal route can process inbound orders', () => {
+  const pkg = JSON.parse(read('package.json'));
+  assert.doesNotMatch(JSON.stringify(pkg.build.files), /mini-services/);
+  assert.doesNotMatch(JSON.stringify(pkg.build.extraResources), /mini-services|GEMINI_API_KEY/);
+  assert.match(pkg.scripts.test, /mini-services\/ai-gateway\/test\/\*\.test\.mjs/);
+  const main = read('electron/main.cjs');
+  assert.match(main, /const localServerEnv = \{ \.\.\.process\.env \}/);
+  assert.match(main, /'GEMINI_API_KEY'.*delete localServerEnv\[name\]/);
+  assert.doesNotMatch(main, /delete localServerEnv\['AURA_AI_INSTALL_TOKEN'\]/);
+  const route = read('src/app/api/internal/whatsapp/route.ts');
+  assert.match(route, /validateInternalCaller\(request\)/);
+  assert.match(route, /'message\.process'/);
+  assert.match(route, /'conversation\.cleanup'/);
+  const rendererRoute = read('src/app/api/local-store/route.ts');
+  assert.match(rendererRoute, /RENDERER_WHATSAPP_ACTIONS/);
+  assert.doesNotMatch(rendererRoute, /'whatsapp\.draft\.confirm'|'message\.process'/);
+  const agent = read('local-services/whatsapp-agent.cjs');
+  assert.match(agent, /redactGatewayText\(message\.text/);
+  assert.match(agent, /EMAIL_ADDRESS_GLOBAL/);
+  assert.doesNotMatch(agent, /customerName:\s*redactGatewayText\(savedDetails/);
+  assert.doesNotMatch(agent, /deliveryAddress:\s*redactGatewayText\(savedDetails/);
+  for (const file of ['mini-services/ai-gateway/server.mjs', 'local-services/whatsapp-agent.cjs', 'electron/main.cjs']) {
+    assert.doesNotMatch(read(file), /AIza[0-9A-Za-z_-]{30,}/, `Google API key literal in ${file}`);
+  }
+});
+
+test('startup and periodic recovery resumes only stale inbound messages through the local queue', () => {
+  const main = read('electron/main.cjs');
+  assert.match(main, /postInternalWhatsApp\('message\.recoverable'\)/);
+  assert.match(main, /postInternalWhatsApp\(resumeExisting \? 'message\.recover' : 'message\.process'/);
+  assert.match(main, /incomingRecoveryTimer = setInterval\(\(\) => \{ void recoverStaleIncomingMessages\(\); \}, 60 \* 1000\)/);
+  const route = read('src/app/api/internal/whatsapp/route.ts');
+  assert.match(route, /'message\.recoverable'/);
+  assert.match(route, /resumeExisting: true/);
+  const store = read('local-services/store.cjs');
+  assert.match(store, /status:'processing',replyId:null,replyText:null,updatedAt:\{lte:BigInt\(cut\)\}/);
+  const rendererRoute = read('src/app/api/local-store/route.ts');
+  assert.doesNotMatch(rendererRoute, /message\.recoverable|message\.recover/);
 });

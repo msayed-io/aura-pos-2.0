@@ -245,7 +245,7 @@ function createLocalStore({ dataDir, autoBackup = true, seed = true, migrationsD
   function orderView(row) { const o=parse(row.data); return { ...o, id:row.id, displayId:row.displayId, createdAt:Number(row.createdAt), isArchived:row.isArchived, items:(row.items || []).map(x=>parse(x.data)) }; }
   async function persistOrder(tx, order, requestId, stockApplied=true) {
     const { items=[], ...rest } = order;
-    await tx.localOrder.create({ data:{ id:order.id, displayId:order.displayId, requestId, createdAt:BigInt(order.createdAt), isArchived:!!order.isArchived, stockApplied, data:json(rest), items:{ create:items.map(it=>({id:id('oi'),data:json(it)})) } } });
+    await tx.localOrder.create({ data:{ id:order.id, displayId:order.displayId, requestId, source:order.source||'POS', draftId:order.draftId||null, createdAt:BigInt(order.createdAt), isArchived:!!order.isArchived, stockApplied, data:json(rest), items:{ create:items.map(it=>({id:id('oi'),data:json(it)})) } } });
   }
   async function inventoryState() {
     const [stock, serials, recipes] = await Promise.all([prisma.localInventory.findMany({ orderBy:{id:'asc'} }), prisma.localSerial.findMany({orderBy:{addedAt:'asc'}}), prisma.localMenu.findMany({where:{kind:'recipe'}})]);
@@ -280,6 +280,32 @@ function createLocalStore({ dataDir, autoBackup = true, seed = true, migrationsD
       for (const record of available) { const d=parse(record.data); d.status='SOLD'; d.soldAt=now(); d.orderId=order.id; await tx.localSerial.update({where:{serialNumber:record.serialNumber},data:{status:'SOLD',soldAt:BigInt(d.soldAt),orderId:order.id,data:json(d)}}); }
     }
   }
+  async function createOrderInTransaction(tx, data, requestId, cashier = {}) {
+    if (requestId) {
+      const existing = await tx.localOrder.findUnique({where:{requestId},include:{items:true}});
+      if (existing) return {...orderView(existing),_isReplay:true};
+    }
+    validateOrder(data);
+    const c=await tx.localCounter.upsert({where:{name:'orders'},create:{name:'orders',value:1001},update:{value:{increment:1}}});
+    const order={...data,id:id('order'),displayId:`AURA-${c.value}`,createdAt:now(),source:data.source||'POS',cashierId:data.cashierId||cashier.cashierId,cashierName:data.cashierName||cashier.cashierName};
+    delete order._requestId;
+    if(order.couponCode) await useCoupon(tx,order.couponCode,order);
+    await fulfill(tx,order);
+    await persistOrder(tx,order,requestId,true);
+    return order;
+  }
+  async function finalizePrint(tx, orderId) {
+    const jobs=await tx.localPrintJob.findMany({where:{orderId}});
+    if(!jobs.length||jobs.some(x=>x.status==='pending'||x.status==='printing'||(x.status==='failed'&&x.attempts<2))) return;
+    if(jobs.every(x=>x.status==='printed')) await tx.localOrder.updateMany({where:{id:orderId,printedAt:null},data:{printedAt:BigInt(now())}});
+    const d=await tx.localWhatsAppDraft.findFirst({where:{orderId}});
+    if(!d)return;
+    const data=parse(d.data), msgId=data.confirmationMessageId;
+    const m=msgId?await tx.localWhatsAppMessage.findFirst({where:{accountId:d.accountId,conversationHash:d.conversationHash,messageId:msgId}}):null;
+    if(m?.replyStatus!=='waiting_print')return;
+    const order=await tx.localOrder.findUnique({where:{id:orderId}}), uncertain=jobs.some(x=>x.status!=='printed');
+    await tx.localWhatsAppMessage.updateMany({where:{id:m.id,replyStatus:'waiting_print'},data:{replyStatus:'pending',replyText:`تم استلام الطلب ${order.displayId}.${uncertain?' تعذر تأكيد اكتمال الطباعة؛ يرجى مراجعة المتجر.':''}`,updatedAt:now()}});
+  }
   const txOptions={ maxWait:5000, timeout:30000 };
   async function dispatch(action,payload={}) {
     if (!initialized) await initialize();
@@ -289,18 +315,80 @@ function createLocalStore({ dataDir, autoBackup = true, seed = true, migrationsD
         case 'orders.list': return (await prisma.localOrder.findMany({include:{items:true},orderBy:{createdAt:'desc'}})).map(orderView);
         case 'orders.add': {
           const data=payload.orderData||{}, requestId=data._requestId||null;
-          if (requestId) { const old=await prisma.localOrder.findUnique({where:{requestId},include:{items:true}}); if(old) return {...orderView(old),_isReplay:true}; }
-          validateOrder(data);
-          return await retry(()=>prisma.$transaction(async tx=>{
-            if(requestId) { const duplicate=await tx.localOrder.findUnique({where:{requestId},include:{items:true}}); if(duplicate) return {...orderView(duplicate),_isReplay:true}; }
-            const c=await tx.localCounter.upsert({where:{name:'orders'},create:{name:'orders',value:1001},update:{value:{increment:1}}});
-            const sequence=c.value; const timestamp=now(); const order={...data,id:id('order'),displayId:`AURA-${sequence}`,createdAt:timestamp,source:data.source||'POS',cashierId:data.cashierId||payload.cashierId,cashierName:data.cashierName||payload.cashierName}; delete order._requestId;
-            if (data.couponCode) await useCoupon(tx,data.couponCode,order);
-            await fulfill(tx,order);
-            await persistOrder(tx,order,requestId,true);
-            return order;
-          },txOptions));
+          return await retry(()=>prisma.$transaction(tx=>createOrderInTransaction(tx,data,requestId,payload),txOptions));
         }
+        case 'whatsapp.agent.settings.get': { const r=await prisma.localMetadata.findUnique({where:{key:'whatsapp-agent-settings'}}); const v=r?parse(r.value):{}; return {enabled:!!v.enabled&&v.consentVersion==='1'&&!!v.consentAcceptedAt,consentVersion:v.consentVersion||null,consentAcceptedAt:v.consentAcceptedAt||null}; }
+        case 'whatsapp.agent.settings.set': { const r=await prisma.localMetadata.findUnique({where:{key:'whatsapp-agent-settings'}}),old=r?parse(r.value):{}; const accepted=payload.enabled===true&&payload.consentVersion==='1'; const v={enabled:accepted,consentVersion:accepted?'1':old.consentVersion||null,consentAcceptedAt:accepted?now():old.consentAcceptedAt||null}; await prisma.localMetadata.upsert({where:{key:'whatsapp-agent-settings'},create:{key:'whatsapp-agent-settings',value:json(v)},update:{value:json(v)}}); return v; }
+        case 'whatsapp.message.ingest': { const {accountId,conversationHash,messageId,text,encryptedReplyTarget}=payload; if(!accountId||!conversationHash||!messageId||typeof text!=='string')throw new StoreError('INVALID_MESSAGE','Message identifiers and text are required'); const t=now(); try{return await prisma.$transaction(async tx=>{let c=await tx.localWhatsAppConversation.findUnique({where:{accountId_conversationHash:{accountId,conversationHash}}});if(!c)c=await tx.localWhatsAppConversation.create({data:{id:id('wac'),accountId,conversationHash,lastMessageAt:t,updatedAt:t}});const m=await tx.localWhatsAppMessage.create({data:{id:id('wam'),accountId,conversationHash,messageId,text,encryptedReplyTarget:encryptedReplyTarget||null,receivedAt:t,updatedAt:t}});await tx.localWhatsAppConversation.update({where:{id:c.id},data:{lastMessageAt:t,updatedAt:t}});return {duplicate:false,messageId:m.id};},txOptions);}catch(e){if(e.code==='P2002'){const m=await prisma.localWhatsAppMessage.findFirst({where:{accountId,conversationHash,messageId}});return {duplicate:true,messageId:m?.id||null};}throw e;} }
+        case 'whatsapp.message.claim': { const {accountId,conversationHash,messageId}=payload, t=now(), staleMs=Number.isFinite(Number(payload.staleMs))&&Number(payload.staleMs)>=0?Number(payload.staleMs):300000;const row=await prisma.localWhatsAppMessage.findFirst({where:{accountId,conversationHash,messageId}});if(!row)return {claimed:false,reason:'not_found'};const conv=await prisma.localWhatsAppConversation.findUnique({where:{accountId_conversationHash:{accountId,conversationHash}}});if(conv?.state==='needs_staff')return {claimed:false,reason:'needs_staff'};const stale=row.status==='processing'&&Number(row.updatedAt)<=t-staleMs&&!row.replyText;const allowed=stale?{id:row.id,status:'processing',updatedAt:row.updatedAt,replyText:null}:{id:row.id,status:{in:['received','failed']}};const r=await prisma.localWhatsAppMessage.updateMany({where:allowed,data:{status:'processing',attempts:{increment:1},updatedAt:t}});return r.count?{claimed:true}:{claimed:false,reason:'not_claimable'}; }
+        case 'whatsapp.message.recoverable': {const settingsRow=await prisma.localMetadata.findUnique({where:{key:'whatsapp-agent-settings'}}),settings=settingsRow?parse(settingsRow.value):{};if(!settings?.enabled||settings.consentVersion!=='1'||!settings.consentAcceptedAt)return [];const staleMs=Number.isFinite(Number(payload.staleMs))&&Number(payload.staleMs)>=0?Number(payload.staleMs):300000,cut=now()-staleMs;const rows=await prisma.localWhatsAppMessage.findMany({where:{OR:[{status:'received',replyId:null,replyText:null},{status:'processing',replyId:null,replyText:null,updatedAt:{lte:BigInt(cut)}}]},orderBy:{receivedAt:'asc'},take:100});return rows.map(row=>({accountId:row.accountId,conversationHash:row.conversationHash,messageId:row.messageId,text:row.text,encryptedReplyTarget:row.encryptedReplyTarget,receivedAt:Number(row.receivedAt)}));}
+        case 'whatsapp.message.reply.recover': {const r=await prisma.localWhatsAppMessage.updateMany({where:{replyStatus:'sending'},data:{replyStatus:'unknown',status:'failed',updatedAt:now()}});return {recovered:r.count};}
+        case 'whatsapp.print.recover': {return retry(()=>prisma.$transaction(async tx=>{const jobs=await tx.localPrintJob.findMany({where:{status:'printing'}});for(const j of jobs){await tx.localPrintJob.updateMany({where:{id:j.id,status:'printing'},data:{status:'unknown',errorCode:'INTERRUPTED_BY_RESTART',updatedAt:now()}});await finalizePrint(tx,j.orderId);}return {recovered:jobs.length};},txOptions));}
+        case 'whatsapp.agent.snapshot': { const conv=await prisma.localWhatsAppConversation.findUnique({where:{accountId_conversationHash:{accountId:payload.accountId,conversationHash:payload.conversationHash}}});if(!conv)return null;const [messages,draft,menu,inventory,recipes]=await Promise.all([prisma.localWhatsAppMessage.findMany({where:{accountId:payload.accountId,conversationHash:payload.conversationHash},orderBy:{receivedAt:'desc'},take:15}),prisma.localWhatsAppDraft.findFirst({where:{accountId:payload.accountId,conversationHash:payload.conversationHash,status:{in:['collecting','awaiting_confirmation','confirmed']}},orderBy:{updatedAt:'desc'}}),prisma.localMenu.findMany({where:{kind:'item'},orderBy:{position:'asc'}}),prisma.localInventory.findMany(),prisma.localMenu.findMany({where:{kind:'recipe'}})]);return {conversation:{id:conv.id,accountId:conv.accountId,conversationHash:conv.conversationHash,state:conv.state,lastMessageAt:Number(conv.lastMessageAt),updatedAt:Number(conv.updatedAt)},messages:messages.reverse().map(x=>({...x,receivedAt:Number(x.receivedAt),updatedAt:Number(x.updatedAt)})),draft:draft?{...draft,createdAt:Number(draft.createdAt),updatedAt:Number(draft.updatedAt),data:parse(draft.data)}:null,menu:menu.map(x=>({...parse(x.data),id:x.id})),inventory:inventory.map(x=>({...parse(x.data),id:x.id,quantity:Number(x.quantity)})),recipes:recipes.map(x=>({...parse(x.data),id:x.id}))}; }
+        case 'whatsapp.draft.update': {
+          const {accountId,conversationHash,draftId}=payload;
+          const existing=draftId?await prisma.localWhatsAppDraft.findUnique({where:{id:draftId}}):await prisma.localWhatsAppDraft.findFirst({where:{accountId,conversationHash,status:{in:['collecting','awaiting_confirmation']}}});
+          const [menuRows,recipeRows,inventoryRows]=await Promise.all([
+            prisma.localMenu.findMany({where:{kind:'item'}}),
+            prisma.localMenu.findMany({where:{kind:'recipe'}}),
+            prisma.localInventory.findMany(),
+          ]);
+          const menuById=new Map(menuRows.map(row=>[row.id,parse(row.data)]));
+          const recipeById=new Map(recipeRows.map(row=>[row.id,parse(row.data)]));
+          const remainingStock=new Map(inventoryRows.map(row=>[row.id,Number(row.quantity)]));
+          const items=[],rejectedItems=[];
+          const maximumQuantity=Math.min(20,Math.max(1,Number(payload.maximumQuantity)||20));
+          for(const req of Array.isArray(payload.items)?payload.items:[]){
+            const m=menuById.get(req?.itemId);
+            if(!m){rejectedItems.push({itemId:req?.itemId,reason:'unknown_item'});continue;}
+            if(m.isActive===false||m.available===false){rejectedItems.push({itemId:req.itemId,name:m.name,reason:'inactive'});continue;}
+            if(m.isWeightBased===true){rejectedItems.push({itemId:req.itemId,name:m.name,reason:'unsupported_weight_based'});continue;}
+            const q=Number(req.quantity),localPrice=Number(m.price);
+            if(!Number.isInteger(q)||q<1||q>maximumQuantity){rejectedItems.push({itemId:req.itemId,name:m.name,reason:'invalid_quantity'});continue;}
+            if(!Number.isFinite(localPrice)||localPrice<0){rejectedItems.push({itemId:req.itemId,name:m.name,reason:'invalid_local_price'});continue;}
+            const recipe=recipeById.get(req.itemId),requirements=[];
+            if(Array.isArray(recipe?.recipe)&&recipe.recipe.length){
+              let invalidRecipe=false;
+              for(const ingredient of recipe.recipe){
+                const ingredientId=ingredient?.inventoryItemId,perUnit=Number(ingredient?.quantity);
+                if(typeof ingredientId!=='string'||!ingredientId||!Number.isFinite(perUnit)||perUnit<0){invalidRecipe=true;break;}
+                requirements.push([ingredientId,perUnit*q]);
+              }
+              if(invalidRecipe){rejectedItems.push({itemId:req.itemId,name:m.name,reason:'invalid_recipe'});continue;}
+            }else if(remainingStock.has(req.itemId))requirements.push([req.itemId,q]);
+            const insufficient=requirements.some(([stockId,needed])=>!remainingStock.has(stockId)||remainingStock.get(stockId)<needed);
+            if(insufficient){rejectedItems.push({itemId:req.itemId,name:m.name,reason:'unavailable_stock'});continue;}
+            for(const [stockId,needed] of requirements)remainingStock.set(stockId,remainingStock.get(stockId)-needed);
+            items.push({...m,id:req.itemId,quantity:q,notes:req.notes||'',price:localPrice});
+          }
+          const orderDetails=payload.orderDetails||{},customerPhone=payload.customerPhone||null;
+          const subtotal=items.reduce((sum,x)=>sum+x.price*x.quantity,0);
+          let discount=0;
+          if(orderDetails.couponCode){const valid=await validateCoupon(orderDetails.couponCode);if(!valid.success)throw new StoreError('COUPON_INVALID','Coupon is invalid');const cp=valid.coupon;discount=cp.discountType==='percentage'?subtotal*Number(cp.discountValue)/100:Number(cp.discountValue);}
+          const needsAddress=orderDetails.deliveryMethod==='delivery'&&!orderDetails.address;
+          const needsDeliveryFee=orderDetails.deliveryMethod==='delivery';
+          const data={items,orderDetails,customerPhone,needsDeliveryFee,summary:{subtotal,deliveryFee:0,discount,total:Math.max(0,subtotal-discount)}};
+          const t=now(),changed=!existing||json(parse(existing.data))!==json(data),version=(existing?.version||0)+(changed?1:0);
+          const row=existing?await prisma.localWhatsAppDraft.updateMany({where:{id:existing.id,status:existing.status,version:existing.version},data:{version,status:'collecting',summaryVersion:null,data:json(data),updatedAt:t}}):null;
+          if(existing&&row.count!==1)throw new StoreError('DRAFT_CONFLICT','Draft changed concurrently');
+          const saved=existing?await prisma.localWhatsAppDraft.findUnique({where:{id:existing.id}}):await prisma.localWhatsAppDraft.create({data:{id:draftId||id('wad'),accountId,conversationHash,status:'collecting',version,data:json(data),createdAt:t,updatedAt:t}});
+          return {draft:{...saved,data:parse(saved.data),createdAt:Number(saved.createdAt),updatedAt:Number(saved.updatedAt)},rejectedItems,needsAddress,needsDeliveryFee};
+        }
+        case 'whatsapp.draft.awaiting': {const r=await prisma.localWhatsAppDraft.updateMany({where:{id:payload.draftId,status:'collecting',version:payload.expectedVersion},data:{status:'awaiting_confirmation',summaryVersion:payload.expectedVersion,updatedAt:now()}});const draft=await prisma.localWhatsAppDraft.findUnique({where:{id:payload.draftId}});return {draft:draft?{...draft,data:parse(draft.data),createdAt:Number(draft.createdAt),updatedAt:Number(draft.updatedAt)}:null,conflict:r.count!==1};}
+        case 'whatsapp.draft.confirm': {return retry(()=>prisma.$transaction(async tx=>{const d=await tx.localWhatsAppDraft.findUnique({where:{id:payload.draftId}});if(!d)throw new StoreError('INVALID_DRAFT','Draft not found');if(d.orderId){const old=await tx.localOrder.findUnique({where:{id:d.orderId},include:{items:true}});return {order:orderView(old),replay:true};}if(parse(d.data)?.needsDeliveryFee)throw new StoreError('DELIVERY_FEE_UNAVAILABLE','Delivery cannot be confirmed until a local fee is configured');if(d.status!=='awaiting_confirmation'||d.summaryVersion!==payload.expectedVersion||d.version!==payload.expectedVersion)throw new StoreError('STALE_SUMMARY','Draft summary is stale');const linked=payload.confirmationMessageId?await tx.localWhatsAppMessage.findFirst({where:{accountId:payload.accountId,conversationHash:payload.conversationHash,messageId:payload.confirmationMessageId}}):null;if(!linked)throw new StoreError('INVALID_MESSAGE','Confirmation message not found');const updated=await tx.localWhatsAppDraft.updateMany({where:{id:d.id,status:'awaiting_confirmation',version:payload.expectedVersion,summaryVersion:payload.expectedVersion},data:{status:'confirmed',updatedAt:now()}});if(updated.count!==1)throw new StoreError('STALE_SUMMARY','Draft confirmation conflict');const data=parse(d.data),od=data.orderDetails||{}, customer={name:od.customerName||od.customer?.name||'',phone:payload.customerPhone||data.customerPhone||od.customerPhone||od.customer?.phone||'',address:od.address||od.customer?.address||''},orderData={customer,items:data.items,summary:{subtotal:data.summary.subtotal,deliveryFee:0,discount:data.summary.discount,total:data.summary.total},status:'Delivered',deliveryMethod:od.deliveryMethod||'pickup',paymentMethod:od.paymentMethod||'cash',couponCode:od.couponCode||null,source:'WHATSAPP',draftId:d.id,_requestId:`wa-draft:${d.id}`};const order=await createOrderInTransaction(tx,orderData,`wa-draft:${d.id}`);data.confirmationMessageId=linked.messageId;await tx.localWhatsAppDraft.update({where:{id:d.id},data:{status:'saved',orderId:order.id,data:json(data),updatedAt:now()}});const types=order.deliveryMethod==='delivery'?['kitchen','delivery']:order.deliveryMethod==='dine_in'?['kitchen','dine_in']:['kitchen','dine_in'];for(const invoiceType of types)await tx.localPrintJob.create({data:{id:id('print'),orderId:order.id,invoiceType,status:'pending',createdAt:now(),updatedAt:now()}});const replyId=crypto.randomUUID(),replyText='تم استلام طلبك وسيتم تأكيده بعد الطباعة.';await tx.localWhatsAppMessage.update({where:{id:linked.id},data:{replyId,replyText,replyStatus:'waiting_print',encryptedReplyTarget:payload.confirmationEncryptedReplyTarget||linked.encryptedReplyTarget,status:'processing',updatedAt:now()}});const parsed=orderView(await tx.localOrder.findUnique({where:{id:order.id},include:{items:true}}));return {order:parsed,printJobs:await tx.localPrintJob.findMany({where:{orderId:order.id}}),replay:false};},txOptions));}
+
+        case 'whatsapp.conversation.handoff': return prisma.localWhatsAppConversation.update({where:payload.conversationId?{id:payload.conversationId}:{accountId_conversationHash:{accountId:payload.accountId,conversationHash:payload.conversationHash}},data:{state:'needs_staff',updatedAt:now()}});
+        case 'whatsapp.conversation.resume': return prisma.localWhatsAppConversation.update({where:payload.conversationId?{id:payload.conversationId}:{accountId_conversationHash:{accountId:payload.accountId,conversationHash:payload.conversationHash}},data:{state:'active',updatedAt:now()}});
+        case 'whatsapp.conversation.list': {const rows=await prisma.localWhatsAppConversation.findMany({orderBy:{lastMessageAt:'desc'},take:100});return Promise.all(rows.map(async c=>{const d=await prisma.localWhatsAppDraft.findFirst({where:{accountId:c.accountId,conversationHash:c.conversationHash,status:{in:['collecting','awaiting_confirmation']}},orderBy:{updatedAt:'desc'}});const x=d?parse(d.data):{};return {conversationId:c.id,state:c.state,timestamp:Number(c.lastMessageAt),draft:d?{status:d.status,version:d.version,itemCount:x.items?.length||0,total:x.summary?.total||0,deliveryFeePending:!!x.needsDeliveryFee}:null};}));}
+        case 'whatsapp.message.reply.prepare': {const m=await prisma.localWhatsAppMessage.findFirst({where:{accountId:payload.accountId,conversationHash:payload.conversationHash,messageId:payload.messageId}});if(!m)throw new StoreError('INVALID_MESSAGE','Message not found');if(m.replyId)return {replyId:m.replyId,replyText:m.replyText,encryptedReplyTarget:m.encryptedReplyTarget,replyStatus:m.replyStatus,duplicate:true};const replyId=crypto.randomUUID();const r=await prisma.localWhatsAppMessage.updateMany({where:{id:m.id,replyId:null},data:{replyId,replyText:payload.replyText,replyStatus:'pending',encryptedReplyTarget:payload.encryptedReplyTarget,updatedAt:now()}});const fresh=await prisma.localWhatsAppMessage.findUnique({where:{id:m.id}});return {replyId:fresh.replyId,replyText:fresh.replyText,encryptedReplyTarget:fresh.encryptedReplyTarget,replyStatus:fresh.replyStatus,duplicate:r.count===0};}
+        case 'whatsapp.message.reply.pending': return prisma.localWhatsAppMessage.findMany({where:{replyStatus:'pending'},orderBy:{updatedAt:'asc'},take:100}).then(rows=>rows.map(r=>({replyId:r.replyId,replyText:r.replyText,encryptedReplyTarget:r.encryptedReplyTarget,replyStatus:r.replyStatus})));
+        case 'whatsapp.message.reply.claim': {const r=await prisma.localWhatsAppMessage.updateMany({where:{replyId:payload.replyId,replyStatus:'pending'},data:{replyStatus:'sending',updatedAt:now()}});return r.count===1?prisma.localWhatsAppMessage.findFirst({where:{replyId:payload.replyId}}):null;}
+        case 'whatsapp.message.reply.complete': {const status=payload.status;if(!['sent','failed','unknown'].includes(status))throw new StoreError('INVALID_STATUS','Invalid reply status');const r=await prisma.localWhatsAppMessage.updateMany({where:{replyId:payload.replyId,replyStatus:'sending'},data:{replyStatus:status,status:status==='sent'?'replied':'failed',updatedAt:now()}});return r.count===1;}
+        case 'whatsapp.print.pending': {const rows=await prisma.localPrintJob.findMany({where:{OR:[{status:'pending'},{status:'failed',attempts:{lt:2}}]},orderBy:{createdAt:'asc'},take:100,include:{order:{include:{items:true}}}});return rows.map(j=>({id:j.id,orderId:j.orderId,invoiceType:j.invoiceType,attempts:j.attempts,order:orderView(j.order)}));}
+        case 'whatsapp.print.claim': {const r=await prisma.localPrintJob.updateMany({where:{id:payload.jobId,OR:[{status:'pending'},{status:'failed',attempts:{lt:2}}]},data:{status:'printing',attempts:{increment:1},updatedAt:now(),errorCode:null}});return r.count===1;}
+        case 'whatsapp.print.complete': {if(!['printed','failed','unknown'].includes(payload.status))throw new StoreError('INVALID_STATUS','Invalid print status');const errorCode=payload.status==='unknown'?String(payload.errorCode||'PRINT_OUTCOME_UNKNOWN').replace(/[^A-Za-z0-9_-]/g,'_').slice(0,64):payload.status==='failed'?String(payload.errorCode||'PRINT_FAILED').replace(/[^A-Za-z0-9_-]/g,'_').slice(0,64):null;return retry(()=>prisma.$transaction(async tx=>{const j=await tx.localPrintJob.findUnique({where:{id:payload.jobId}});if(!j)throw new StoreError('PRINT_JOB_NOT_FOUND','Print job not found');if(j.status!=='printing')return j;await tx.localPrintJob.updateMany({where:{id:j.id,status:'printing'},data:{status:payload.status,errorCode,printedAt:payload.status==='printed'?BigInt(now()):null,updatedAt:now()}});await finalizePrint(tx,j.orderId);return tx.localPrintJob.findUnique({where:{id:j.id}});},txOptions));}
+
+        case 'whatsapp.cleanup': {const days=Math.max(1,Math.min(365,Math.floor(Number(payload.days)||30))),cut=now()-days*86400000;const old=await prisma.localWhatsAppConversation.findMany({where:{lastMessageAt:{lt:cut}},select:{accountId:true,conversationHash:true}});for(const c of old)await prisma.localWhatsAppConversation.delete({where:{accountId_conversationHash:c}});return {deleted:old.length};}
         case 'orders.status': return changeOrder(payload.orderId, {status:payload.status});
         case 'orders.update': return changeOrder(payload.orderId,payload.updates||{});
         case 'orders.archive': return changeOrder(payload.orderId,{isArchived:!!payload.isArchived});

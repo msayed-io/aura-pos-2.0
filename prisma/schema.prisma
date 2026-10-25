@@ -27,19 +27,24 @@ model Post {
 }
 
 model LocalOrder {
-  id          String      @id
-  displayId   String      @unique
-  requestId   String?     @unique
-  createdAt   BigInt
-  isArchived  Boolean     @default(false)
-  stockApplied Boolean    @default(false)
-  data        String
-  items       LocalOrderItem[]
+  id           String                @id
+  displayId    String                @unique
+  requestId    String?               @unique
+  createdAt    BigInt
+  isArchived   Boolean               @default(false)
+  stockApplied Boolean               @default(false)
+  source       String                @default("POS")
+  draftId      String?               @unique
+  printedAt    BigInt?
+  data         String
+  items        LocalOrderItem[]
+  drafts       LocalWhatsAppDraft[]
+  printJobs    LocalPrintJob[]
   @@index([createdAt])
 }
 
 model LocalOrderItem {
-  id      String @id
+  id      String     @id
   orderId String
   data    String
   order   LocalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
@@ -52,9 +57,9 @@ model LocalCounter {
 }
 
 model LocalInventory {
-  id      String @id
+  id       String @id
   quantity Float
-  data    String
+  data     String
 }
 
 model LocalSerial {
@@ -85,11 +90,11 @@ model LocalCoupon {
 }
 
 model LocalCouponUsage {
-  id       String @id
-  couponId String
-  orderId  String
+  id        String @id
+  couponId  String
+  orderId   String
   timestamp BigInt
-  data     String
+  data      String
   @@index([couponId, timestamp])
 }
 
@@ -101,4 +106,66 @@ model LocalMetadata {
 model LocalNotice {
   id   String @id
   data String
+}
+
+model LocalWhatsAppConversation {
+  id               String                  @id
+  accountId        String
+  conversationHash String
+  state            String                  @default("active")
+  lastMessageAt    BigInt
+  updatedAt        BigInt
+  messages         LocalWhatsAppMessage[]
+  drafts           LocalWhatsAppDraft[]
+  @@unique([accountId, conversationHash])
+  @@index([lastMessageAt])
+}
+
+model LocalWhatsAppMessage {
+  id                    String                   @id
+  accountId             String
+  conversationHash      String
+  messageId             String
+  text                  String
+  status                String                   @default("received")
+  attempts              Int                      @default(0)
+  receivedAt            BigInt
+  updatedAt             BigInt
+  replyText             String?
+  replyId               String?
+  replyStatus           String?
+  encryptedReplyTarget  String?
+  conversation          LocalWhatsAppConversation @relation(fields: [accountId, conversationHash], references: [accountId, conversationHash], onDelete: Cascade)
+  @@unique([accountId, conversationHash, messageId])
+  @@index([status, updatedAt])
+  @@index([conversationHash, receivedAt])
+}
+
+model LocalWhatsAppDraft {
+  id               String                    @id
+  accountId        String
+  conversationHash String
+  status           String
+  version          Int
+  summaryVersion   Int?
+  data             String
+  createdAt        BigInt
+  updatedAt        BigInt
+  orderId          String?                   @unique
+  conversation     LocalWhatsAppConversation @relation(fields: [accountId, conversationHash], references: [accountId, conversationHash], onDelete: Cascade)
+  order            LocalOrder?               @relation(fields: [orderId], references: [id])
+}
+
+model LocalPrintJob {
+  id          String     @id
+  orderId     String
+  invoiceType String
+  status      String
+  attempts    Int        @default(0)
+  errorCode   String?
+  createdAt   BigInt
+  updatedAt   BigInt
+  printedAt   BigInt?
+  order       LocalOrder @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  @@unique([orderId, invoiceType])
 }

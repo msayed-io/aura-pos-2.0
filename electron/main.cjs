@@ -3,16 +3,17 @@
 
 const {
   app, BrowserWindow, ipcMain, Notification, utilityProcess, dialog,
-  Menu, Tray, powerMonitor,
+  Menu, Tray, powerMonitor, safeStorage,
 } = require('electron');
 const { createServer } = require('node:net');
 const { request } = require('node:http');
-const { randomBytes } = require('node:crypto');
+const { randomBytes, createHmac } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { UtilityServiceSupervisor } = require('./service-supervisor.cjs');
 const { installCloseToTray } = require('./window-lifecycle.cjs');
 const { acquireSingleInstance } = require('./single-instance.cjs');
+const { isDirectJid } = require('./whatsapp-messaging.cjs');
 
 let mainWindow;
 let windowCreationPromise;
@@ -22,6 +23,8 @@ let serverExited = true;
 let serverPort;
 let serverReady = false;
 let serverShutdownToken;
+let serverWhatsAppToken;
+let conversationHashKey;
 let tray;
 let serviceSupervisor;
 let serviceState = 'idle';
@@ -32,6 +35,14 @@ let appIsQuitting = false;
 let shutdownComplete = false;
 let shutdownPromise;
 let focusRequestedBeforeReady = false;
+let replyFlushActive = false;
+let printFlushActive = false;
+let replyFlushRequested = false;
+let printFlushRequested = false;
+let conversationCleanupTimer;
+let incomingRecoveryTimer;
+const conversationWork = new Map();
+const printJobsInFlight = new Set();
 
 const hasSingleInstanceLock = acquireSingleInstance(app, () => {
   if (!mainWindow || mainWindow.isDestroyed()) focusRequestedBeforeReady = true;
@@ -59,6 +70,7 @@ function report(code, error) {
 }
 
 function publishWhatsAppStatus(snapshot) {
+  const previousState = serviceState;
   serviceState = snapshot.state;
   if (serviceState !== 'qr' && whatsappQr !== null) {
     whatsappQr = null;
@@ -66,6 +78,13 @@ function publishWhatsAppStatus(snapshot) {
   }
   updateTrayMenu();
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('whatsapp:status', { state: serviceState });
+  if (previousState === 'connected' && serviceState !== 'connected') {
+    void postInternalWhatsApp('reply.recover').catch(error => report('WHATSAPP_REPLY_RECOVERY_FAILED', error));
+  }
+  if (serviceState === 'connected') {
+    void processPendingPrintJobs();
+    void flushPendingReplies();
+  }
 }
 
 function readSettings() {
@@ -81,6 +100,98 @@ function writeSettings(settings) {
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2), { encoding: 'utf8', mode: 0o600 });
   return settings;
+}
+
+function loadConversationHashKey() {
+  const file = path.join(dataDir, 'whatsapp-chat-hash.key');
+  try {
+    const value = fs.readFileSync(file, 'utf8').trim();
+    if (!/^[a-f0-9]{64}$/i.test(value)) throw new Error('WHATSAPP_HASH_KEY_INVALID');
+    return Buffer.from(value, 'hex');
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  const key = randomBytes(32);
+  let descriptor;
+  try {
+    descriptor = fs.openSync(file, 'wx', 0o600);
+    fs.writeFileSync(descriptor, key.toString('hex'), 'utf8');
+    fs.fsyncSync(descriptor);
+    return key;
+  } catch (error) {
+    if (error?.code === 'EEXIST') return loadConversationHashKey();
+    throw error;
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
+function hashConversation(jid) {
+  if (!conversationHashKey) conversationHashKey = loadConversationHashKey();
+  return createHmac('sha256', conversationHashKey).update(`primary\0${jid}`, 'utf8').digest('hex');
+}
+
+function encryptReplyTarget(jid) {
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('LOCAL_ENCRYPTION_UNAVAILABLE');
+  return safeStorage.encryptString(jid).toString('base64');
+}
+
+function decryptReplyTarget(encrypted) {
+  if (typeof encrypted !== 'string' || encrypted.length > 4096 || !/^[A-Za-z0-9+/]+={0,2}$/.test(encrypted)) {
+    throw new Error('REPLY_TARGET_INVALID');
+  }
+  if (!safeStorage.isEncryptionAvailable()) throw new Error('LOCAL_ENCRYPTION_UNAVAILABLE');
+  const jid = safeStorage.decryptString(Buffer.from(encrypted, 'base64'));
+  if (!isDirectJid(jid)) throw new Error('REPLY_TARGET_INVALID');
+  return jid;
+}
+
+function postInternalWhatsApp(action, payload = {}) {
+  return ensureLocalServer().then(() => new Promise((resolve, reject) => {
+    if (!serverWhatsAppToken || serverWhatsAppToken.length !== 64) return reject(new Error('INTERNAL_WHATSAPP_TOKEN_UNAVAILABLE'));
+    const body = Buffer.from(JSON.stringify({ action, payload }), 'utf8');
+    const origin = `http://127.0.0.1:${serverPort}`;
+    const req = request({
+      hostname: '127.0.0.1', port: serverPort, path: '/api/internal/whatsapp', method: 'POST', timeout: 45000,
+      headers: {
+        Origin: origin,
+        Authorization: `Bearer ${serverWhatsAppToken}`,
+        'Content-Type': 'application/json',
+        'Content-Length': body.length,
+        Connection: 'close',
+      },
+    }, res => {
+      const chunks = [];
+      let length = 0;
+      res.on('data', chunk => {
+        length += chunk.length;
+        if (length > 512 * 1024) {
+          res.destroy(new Error('INTERNAL_WHATSAPP_RESPONSE_TOO_LARGE'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('error', reject);
+      res.on('end', () => {
+        let result;
+        try {
+          result = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          reject(new Error('INTERNAL_WHATSAPP_INVALID_RESPONSE'));
+          return;
+        }
+        if (res.statusCode !== 200 || result?.ok !== true) {
+          const code = typeof result?.error?.code === 'string' ? result.error.code.slice(0, 48) : `HTTP_${res.statusCode || 0}`;
+          reject(new Error(`INTERNAL_WHATSAPP_${code}`));
+          return;
+        }
+        resolve(result.data);
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('INTERNAL_WHATSAPP_TIMEOUT')));
+    req.on('error', reject);
+    req.end(body);
+  }));
 }
 
 function findFreePort() {
@@ -138,20 +249,24 @@ function startNextServer() {
   fs.mkdirSync(dataDir, { recursive: true });
   serverPort = serverPort || 0;
   serverShutdownToken = randomBytes(32).toString('hex');
+  serverWhatsAppToken = randomBytes(32).toString('hex');
   const databaseUrl = `file:${path.join(dataDir, 'aura.sqlite').replace(/\\/g, '/')}?connection_limit=1`;
+  const localServerEnv = { ...process.env };
+  for (const name of ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'GENAI_API_KEY', 'AURA_INSTALL_TOKEN_HASHES', 'GEMINI_BASE_URL', 'GEMINI_MODEL']) delete localServerEnv[name];
   const child = utilityProcess.fork(serverEntry, [], {
     cwd: serverRoot,
     serviceName: 'Aura Local POS Server',
     windowsHide: true,
     stdio: isDev ? 'inherit' : 'ignore',
     env: {
-      ...process.env,
+      ...localServerEnv,
       NODE_ENV: 'production',
       HOSTNAME: '127.0.0.1',
       PORT: String(serverPort),
       AURA_DATA_DIR: dataDir,
       AURA_MIGRATIONS_DIR: path.join(serverRoot, 'prisma', 'migrations'),
       AURA_INTERNAL_SHUTDOWN_TOKEN: serverShutdownToken,
+      AURA_INTERNAL_WHATSAPP_TOKEN: serverWhatsAppToken,
       DATABASE_URL: databaseUrl,
     },
   });
@@ -165,6 +280,7 @@ function startNextServer() {
     serverExited = true;
     serverReady = false;
     serverShutdownToken = undefined;
+    serverWhatsAppToken = undefined;
     if (code && !appIsQuitting) report('LOCAL_SERVER_EXITED', { code });
   });
 }
@@ -247,17 +363,212 @@ async function silentPrint({ printer, data, type }) {
   if (typeof printer !== 'string' || !printer.trim()) throw new Error('A printer name is required');
   if (!data || typeof data !== 'object' || !Array.isArray(data.items) || !['kitchen', 'delivery', 'dine_in'].includes(type)) throw new Error('Invalid print request');
   const printWindow = new BrowserWindow({ show: false, webPreferences: { sandbox: true } });
+  let printDispatched = false;
   try {
     await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(invoiceHtml(data, type))}`);
+    printDispatched = true;
     await new Promise((resolve, reject) => {
       printWindow.webContents.print({ silent: true, printBackground: true, deviceName: printer }, (success, failureReason) => {
         if (success) resolve();
-        else reject(new Error(failureReason || 'Silent printing failed'));
+        else {
+          const error = new Error(failureReason || 'Silent printing failed');
+          error.code = 'PRINT_RESULT_UNCERTAIN';
+          reject(error);
+        }
       });
     });
+  } catch (error) {
+    if (error && typeof error === 'object' && !error.code) error.code = printDispatched ? 'PRINT_RESULT_UNCERTAIN' : 'PRINT_NOT_DISPATCHED';
+    throw error;
   } finally {
     if (!printWindow.isDestroyed()) printWindow.close();
   }
+}
+
+function notifyPrintIssue(displayId) {
+  if (!Notification.isSupported()) return;
+  const safeId = typeof displayId === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/.test(displayId) ? displayId : 'غير معروف';
+  new Notification({ title: 'Aura POS — تعذرت الطباعة', body: `راجع الطابعة وحالة الطلب ${safeId} قبل إعادة المحاولة.` }).show();
+}
+
+async function processPendingPrintJobs() {
+  if (printFlushActive) {
+    printFlushRequested = true;
+    return;
+  }
+  printFlushActive = true;
+  try {
+    const jobs = await postInternalWhatsApp('print.pending');
+    if (!Array.isArray(jobs)) return;
+    for (const job of jobs) {
+      if (!job || typeof job.id !== 'string' || printJobsInFlight.has(job.id)) continue;
+      printJobsInFlight.add(job.id);
+      try {
+        const order = job.order;
+        const displayId = order?.displayId;
+        const settings = readSettings();
+        const printer = job.invoiceType === 'kitchen' ? settings?.kitchenPrinter : settings?.cashierPrinter;
+        if (!order || !Array.isArray(order.items) || !['kitchen', 'delivery', 'dine_in'].includes(job.invoiceType) || typeof printer !== 'string' || !printer.trim()) {
+          notifyPrintIssue(displayId);
+          continue;
+        }
+        const claimed = await postInternalWhatsApp('print.claim', { jobId: job.id });
+        if (claimed === false || claimed?.claimed === false || claimed === null) continue;
+        try {
+          await silentPrint({ printer, data: order, type: job.invoiceType });
+          await postInternalWhatsApp('print.complete', { jobId: job.id, status: 'printed' });
+        } catch (error) {
+          const notDispatched = error?.code === 'PRINT_NOT_DISPATCHED';
+          report(notDispatched ? 'WHATSAPP_PRINT_PREPARATION_FAILED' : 'WHATSAPP_PRINT_JOB_UNCERTAIN', error);
+          try {
+            await postInternalWhatsApp('print.complete', {
+              jobId: job.id,
+              status: notDispatched ? 'failed' : 'unknown',
+              errorCode: notDispatched ? 'PRINT_NOT_DISPATCHED' : 'PRINT_RESULT_UNCERTAIN',
+            });
+          } catch (completeError) {
+            report('WHATSAPP_PRINT_RESULT_FAILED', completeError);
+          }
+          if (notDispatched && Number(job.attempts || 0) < 1) printFlushRequested = true;
+          else notifyPrintIssue(displayId);
+        }
+      } catch (error) {
+        report('WHATSAPP_PRINT_JOB_FAILED', error);
+      } finally {
+        printJobsInFlight.delete(job.id);
+      }
+    }
+  } catch (error) {
+    report('WHATSAPP_PRINT_QUEUE_FAILED', error);
+  } finally {
+    printFlushActive = false;
+    void flushPendingReplies();
+    if (printFlushRequested) {
+      printFlushRequested = false;
+      setImmediate(() => { void processPendingPrintJobs(); });
+    }
+  }
+}
+
+async function flushPendingReplies() {
+  if (serviceState !== 'connected' || appIsQuitting) return;
+  if (replyFlushActive) {
+    replyFlushRequested = true;
+    return;
+  }
+  replyFlushActive = true;
+  try {
+    const pending = await postInternalWhatsApp('reply.pending');
+    if (!Array.isArray(pending)) return;
+    for (const entry of pending) {
+      if (!entry || typeof entry.replyId !== 'string' || typeof entry.replyText !== 'string' || entry.replyText.length === 0) continue;
+      const claimed = await postInternalWhatsApp('reply.claim', { replyId: entry.replyId });
+      if (!claimed || claimed?.claimed === false) continue;
+      try {
+        const jid = decryptReplyTarget(entry.encryptedReplyTarget);
+        const accepted = serviceSupervisor?.reply(entry.replyId, jid, entry.replyText) === true;
+        if (!accepted) await postInternalWhatsApp('reply.complete', { replyId: entry.replyId, status: 'failed' });
+      } catch (error) {
+        report('WHATSAPP_REPLY_DISPATCH_FAILED', error);
+        try {
+          await postInternalWhatsApp('reply.complete', { replyId: entry.replyId, status: 'failed' });
+        } catch (completeError) {
+          report('WHATSAPP_REPLY_RESULT_FAILED', completeError);
+        }
+      }
+    }
+  } catch (error) {
+    report('WHATSAPP_REPLY_QUEUE_FAILED', error);
+  } finally {
+    replyFlushActive = false;
+    if (replyFlushRequested) {
+      replyFlushRequested = false;
+      setImmediate(() => { void flushPendingReplies(); });
+    }
+  }
+}
+
+async function processIncomingWhatsAppMessage(message, resumeExisting = false) {
+  let jid;
+  try {
+    jid = resumeExisting ? decryptReplyTarget(message?.encryptedReplyTarget) : message?.jid;
+  } catch (error) {
+    report('WHATSAPP_RECOVERY_TARGET_DECRYPT_FAILED', error);
+    return;
+  }
+  if (!message || !isDirectJid(jid) || typeof message.messageId !== 'string' || !message.messageId
+    || message.messageId.length > 128 || typeof message.text !== 'string' || !message.text.trim() || message.text.length > 8192) return;
+  const conversationHash = resumeExisting ? message.conversationHash : hashConversation(jid);
+  if (!/^[a-f0-9]{64}$/.test(conversationHash) || hashConversation(jid) !== conversationHash) {
+    report('WHATSAPP_RECOVERY_IDENTITY_MISMATCH');
+    return;
+  }
+  const encryptedReplyTarget = resumeExisting ? message.encryptedReplyTarget : encryptReplyTarget(jid);
+  const customerPhone = jid.endsWith('@s.whatsapp.net') ? jid.slice(0, -'@s.whatsapp.net'.length) : '';
+  const result = await postInternalWhatsApp(resumeExisting ? 'message.recover' : 'message.process', {
+    accountId: 'primary', conversationHash, messageId: message.messageId,
+    text: message.text, encryptedReplyTarget, customerPhone,
+  });
+  if (result?.order?.id) showNewOrderNotification(result.order.displayId);
+  if (result?.order?.id) await processPendingPrintJobs();
+  await flushPendingReplies();
+}
+
+function queueWhatsAppMessage(message, conversationHash, resumeExisting = false) {
+  const previous = conversationWork.get(conversationHash) || Promise.resolve();
+  const current = previous.then(() => processIncomingWhatsAppMessage(message, resumeExisting)).catch(error => {
+    report('WHATSAPP_MESSAGE_PROCESSING_FAILED', error);
+  });
+  conversationWork.set(conversationHash, current);
+  void current.finally(() => {
+    if (conversationWork.get(conversationHash) === current) conversationWork.delete(conversationHash);
+  });
+}
+
+function enqueueIncomingWhatsAppMessage(message) {
+  try {
+    if (!message || !isDirectJid(message.jid)) return;
+    queueWhatsAppMessage(message, hashConversation(message.jid));
+  } catch (error) {
+    report('WHATSAPP_MESSAGE_IDENTITY_FAILED', error);
+  }
+}
+
+function enqueueRecoveredWhatsAppMessage(message) {
+  if (!message || message.accountId !== 'primary' || typeof message.conversationHash !== 'string'
+    || !/^[a-f0-9]{64}$/.test(message.conversationHash) || typeof message.messageId !== 'string'
+    || typeof message.text !== 'string' || typeof message.encryptedReplyTarget !== 'string') return;
+  queueWhatsAppMessage(message, message.conversationHash, true);
+}
+
+async function recoverAgentOperations() {
+  try { await postInternalWhatsApp('reply.recover'); }
+  catch (error) { report('WHATSAPP_REPLY_RECOVERY_FAILED', error); }
+  try { await postInternalWhatsApp('print.recover'); }
+  catch (error) { report('WHATSAPP_PRINT_RECOVERY_FAILED', error); }
+  await recoverStaleIncomingMessages();
+}
+
+async function recoverStaleIncomingMessages() {
+  try {
+    const messages = await postInternalWhatsApp('message.recoverable');
+    if (!Array.isArray(messages)) return;
+    for (const message of messages) enqueueRecoveredWhatsAppMessage(message);
+  } catch (error) {
+    report('WHATSAPP_MESSAGE_RECOVERY_FAILED', error);
+  }
+}
+
+async function cleanupOldWhatsAppConversations() {
+  try { await postInternalWhatsApp('conversation.cleanup'); }
+  catch (error) { report('WHATSAPP_CONVERSATION_CLEANUP_FAILED', error); }
+}
+
+function recordWhatsAppReplyStatus(result) {
+  if (!result || typeof result.replyId !== 'string' || !['sent', 'failed'].includes(result.status)) return;
+  void postInternalWhatsApp('reply.complete', { replyId: result.replyId, status: result.status })
+    .then(() => flushPendingReplies())
+    .catch(error => report('WHATSAPP_REPLY_RESULT_FAILED', error));
 }
 
 function assertTrustedIpc(event) {
@@ -286,7 +597,9 @@ function registerIpc() {
     assertTrustedIpc(event);
     if (!settings || typeof settings.cashierPrinter !== 'string' || typeof settings.kitchenPrinter !== 'string'
       || settings.cashierPrinter.length > 200 || settings.kitchenPrinter.length > 200) throw new Error('INVALID_PRINTER_SETTINGS');
-    return writeSettings(settings);
+    const saved = writeSettings(settings);
+    setImmediate(() => { void processPendingPrintJobs(); });
+    return saved;
   });
   ipcMain.handle('print:invoice', (event, args) => { assertTrustedIpc(event); return silentPrint(args); });
   ipcMain.handle('notification:show', (event, payload) => {
@@ -412,6 +725,10 @@ async function shutdownAll() {
     try { await serviceSupervisor.stop(); }
     catch (error) { report('WHATSAPP_SERVICE_STOP_FAILED', error); }
   }
+  if (conversationCleanupTimer) clearInterval(conversationCleanupTimer);
+  conversationCleanupTimer = null;
+  if (incomingRecoveryTimer) clearInterval(incomingRecoveryTimer);
+  incomingRecoveryTimer = null;
   if (serverProcess && !serverExited) {
     let checkpointed = false;
     try {
@@ -448,6 +765,8 @@ if (hasSingleInstanceLock) {
     serviceSupervisor.on('error-code', errorCode => report('WHATSAPP_SERVICE_REPORTED_ERROR', { code: errorCode }));
     serviceSupervisor.on('memory-limit', () => { serviceState = 'reconnecting'; updateTrayMenu(); });
     serviceSupervisor.on('new-order', ({ displayId }) => { showNewOrderNotification(displayId); });
+    serviceSupervisor.on('incoming-message', enqueueIncomingWhatsAppMessage);
+    serviceSupervisor.on('reply-status', recordWhatsAppReplyStatus);
     serviceSupervisor.start();
     powerMonitor.on('suspend', () => { serviceSupervisor?.command('suspend'); });
     powerMonitor.on('resume', () => {
@@ -459,6 +778,14 @@ if (hasSingleInstanceLock) {
     });
     powerMonitor.on('shutdown', () => { appIsQuitting = true; app.quit(); });
     await createWindow();
+    await recoverAgentOperations();
+    await cleanupOldWhatsAppConversations();
+    conversationCleanupTimer = setInterval(() => { void cleanupOldWhatsAppConversations(); }, 24 * 60 * 60 * 1000);
+    conversationCleanupTimer.unref?.();
+    incomingRecoveryTimer = setInterval(() => { void recoverStaleIncomingMessages(); }, 60 * 1000);
+    incomingRecoveryTimer.unref?.();
+    void processPendingPrintJobs();
+    void flushPendingReplies();
     if (focusRequestedBeforeReady) await showMainWindow();
   }).catch(error => {
     report('STARTUP_FAILED', error);

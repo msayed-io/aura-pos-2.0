@@ -14,7 +14,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "test": "npm run prepare:whatsapp-runtime && node --test tests/*.test.mjs",
+    "test": "npm run prepare:whatsapp-runtime && node --test tests/*.test.mjs mini-services/ai-gateway/test/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:standalone": "node scripts/test-standalone-storage.mjs",
     "test:electron-window": "node --test tests/electron-window-smoke.test.mjs",
