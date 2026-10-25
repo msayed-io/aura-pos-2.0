@@ -37,6 +37,7 @@ function Get-InstalledProcessSnapshot {
   $workingSetBytes = ($entries | Measure-Object -Property WorkingSetSize -Sum).Sum
   $privateMemoryBytes = ($entries | Measure-Object -Property PrivatePageCount -Sum).Sum
   $handleCount = ($entries | Measure-Object -Property HandleCount -Sum).Sum
+  $processImageNames = @($entries | ForEach-Object { [string]$_.Name } | Sort-Object)
   $processIdentities = @($entries | ForEach-Object {
     $creation = $_.CreationDate
     if ($creation -is [datetime]) { $creation = $creation.ToUniversalTime().ToString('o') }
@@ -50,6 +51,7 @@ function Get-InstalledProcessSnapshot {
     processEntries = $entries
     processCount = $entries.Count
     processIds = @($entries | ForEach-Object { [int]$_.ProcessId } | Sort-Object)
+    processImageNames = $processImageNames
     processIdentities = $processIdentities
     cpuSeconds = [double]$cpuSeconds
     workingSetBytes = [double]$workingSetBytes
@@ -234,6 +236,7 @@ try {
       systemCpuPercent = $systemCpuPercent
       processCount = $snapshot.processCount
       processIds = $snapshot.processIds
+      processImageNames = $snapshot.processImageNames
       processIdentities = $snapshot.processIdentities
       handleCount = $snapshot.handleCount
       workingSetMB = [math]::Round($snapshot.workingSetBytes / 1MB, 1)
@@ -288,6 +291,7 @@ try {
   $processCountStable = $processCounts.Count -eq 1
   $processIdentitySets = @($resourceSamples | ForEach-Object { (@($_.processIdentities | Sort-Object) -join ',') } | Sort-Object -Unique)
   $processIdentityStable = $processIdentitySets.Count -eq 1
+  $processImageSets = @($resourceSamples | ForEach-Object { (@($_.processImageNames | Sort-Object) -join ',') } | Sort-Object -Unique)
   $idleApplicationCpuPercent = [math]::Round(($weightedApplicationCpu / $cpuIntervalWeightSeconds), 2)
   $systemCpuSamples = @($lastFiveMinutes | Where-Object { $null -ne $_.systemCpuPercent })
   if ($systemCpuSamples.Count -lt 100) { throw "Insufficient total-system CPU samples in the last five minutes: $($systemCpuSamples.Count)." }
@@ -317,6 +321,8 @@ try {
     stableProcessIdentity = $processIdentityStable
     processIdentitySetCount = $processIdentitySets.Count
     processCountValues = $processCounts
+    processImageSetCount = $processImageSets.Count
+    processImageSets = $processImageSets
     peakWorkingSetMB = [math]::Round($peakWorkingSetMB, 1)
     p99BaselineComparisonAvailable = $false
     p99BaselineComparisonReason = 'No prior Windows baseline with the same 20-conversation WhatsApp workload.'
@@ -342,6 +348,7 @@ try {
 - Private memory: start average $([math]::Round($initialPrivateMB,1)) MB; peak $([math]::Round($peakPrivateMB,1)) MB; peak growth $privatePeakGrowthPercent%
 - Handles: start average $([math]::Round($initialHandles,0)); peak $([math]::Round($peakHandles,0)); peak growth $peakHandleGrowthPercent%
 - Process count/identity stable: $processCountStable/$processIdentityStable ($($processCounts -join ', ')); WhatsApp idle service memory: $($ready.whatsappServiceMemoryMb) MB
+- Process image sets observed: $($processImageSets -join ' | ')
 "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
     if (!$systemCpuTargetMet) { '- Total-system CPU target was not met; it includes unrelated runner processes, while application CPU is measured separately.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
   }

@@ -264,6 +264,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /peakHandleGrowthPercent -gt 10\.0/);
   assert.match(windowsSmoke, /if \(!\$processCountStable\)/);
   assert.match(windowsSmoke, /if \(!\$processIdentityStable\)/);
+  assert.match(windowsSmoke, /processImageNames = @\(\$entries \| ForEach-Object \{ \[string\]\$_.Name \} \| Sort-Object\)/);
+  assert.match(windowsSmoke, /processImageNames = \$snapshot\.processImageNames/);
+  assert.match(windowsSmoke, /processImageSetCount = \$processImageSets\.Count/);
   assert.match(windowsSmoke, /ParentProcessId/);
   assert.match(windowsSmoke, /CreationDate/);
   assert.match(windowsSmoke, /KernelModeTime/);
