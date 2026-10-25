@@ -408,7 +408,30 @@ try {
   $files = Get-ChildItem -Path $scanRoots -File -Recurse -ErrorAction SilentlyContinue
   # Google API key prefixes are case-sensitive; avoid case-insensitive matches in encoded data.
   $googleApiKeyPattern = 'AIza[0-9A-Za-z_-]{30,}'
+  # Baileys 6.7.24 includes one key-shaped protocol token; only these exact upstream table hashes are allowed.
+  $knownBaileysProtocolTableHashes = @{
+    'constants.js' = '9f3b6064c052ce519e268e74108ea76669c7bf188c43e2b4f590a147102287cd'
+    'constants.d.ts' = '632274bf27e749a6c90b5dc738496364d933e8b346845b00d3f2f8ecbe23a126'
+  }
+  $baileysWabinaryRoot = [System.IO.Path]::GetFullPath((Join-Path $runtime 'node_modules\@whiskeysockets\baileys\lib\WABinary')) + [System.IO.Path]::DirectorySeparatorChar
   foreach ($file in $files) {
+    $isPinnedBaileysTable = $file.FullName.StartsWith($baileysWabinaryRoot, [System.StringComparison]::OrdinalIgnoreCase) -and $knownBaileysProtocolTableHashes.ContainsKey($file.Name)
+    if ($isPinnedBaileysTable) {
+      $expectedHash = $knownBaileysProtocolTableHashes[$file.Name]
+      $actualHash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+      $protocolText = [System.IO.File]::ReadAllText($file.FullName)
+      $protocolMatches = [regex]::Matches($protocolText, $googleApiKeyPattern)
+      $tokenTableStart = $protocolText.IndexOf('DOUBLE_BYTE_TOKENS', [System.StringComparison]::Ordinal)
+      if ($actualHash -eq $expectedHash -and $protocolMatches.Count -eq 1 -and $tokenTableStart -ge 0) {
+        $protocolMatch = $protocolMatches[0]
+        if ($protocolMatch.Index -gt $tokenTableStart) {
+          $protocolTextWithoutToken = $protocolText.Remove($protocolMatch.Index, $protocolMatch.Length)
+          if ($protocolTextWithoutToken -cmatch $googleApiKeyPattern) { throw "Unexpected Google API key pattern in Baileys protocol table: $($file.Name)" }
+          Write-Host "Validated pinned Baileys WABinary token table: $($file.Name)."
+          continue
+        }
+      }
+    }
     if ($file.Name -cmatch '^query_compiler_bg\..+\.wasm-base64\.js$') {
       $wrapperText = [System.IO.File]::ReadAllText($file.FullName)
       $payloadMatch = [regex]::Match($wrapperText, 'const\s+wasm\s*=\s*"(?<payload>[A-Za-z0-9+/=]+)"')

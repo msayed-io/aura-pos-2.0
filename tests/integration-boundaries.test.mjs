@@ -294,6 +294,11 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.ok(windowsSmoke.includes("$file.Name -cmatch '^query_compiler_bg\\..+\\.wasm-base64\\.js$'"));
   assert.ok(windowsSmoke.includes("if (!$payloadMatch.Success)"));
   assert.ok(windowsSmoke.includes("Invalid WebAssembly payload in packaged file"));
+  assert.ok(windowsSmoke.includes("'constants.js' = '9f3b6064c052ce519e268e74108ea76669c7bf188c43e2b4f590a147102287cd'"));
+  assert.ok(windowsSmoke.includes("'constants.d.ts' = '632274bf27e749a6c90b5dc738496364d933e8b346845b00d3f2f8ecbe23a126'"));
+  assert.ok(windowsSmoke.includes("$protocolMatches.Count -eq 1"));
+  assert.ok(windowsSmoke.includes("$protocolTextWithoutToken -cmatch $googleApiKeyPattern"));
+  assert.ok(windowsSmoke.includes("$actualHash -eq $expectedHash"));
   const supervisor = read('electron/service-supervisor.cjs');
   assert.match(supervisor, /memoryLimitBytes = 256 \* 1024 \* 1024/);
   const gateway = read('tests/fixtures/windows-smoke-gateway.mjs');
