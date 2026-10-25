@@ -88,6 +88,11 @@ try {
   if ($proc.ExitCode -ne 0) { throw "NSIS installer failed with exit code $($proc.ExitCode)" }
   $appExe = Join-Path $installDir 'Aura POS.exe'
   if (!(Test-Path $appExe)) { throw 'Installed application executable missing.' }
+  $unpackedWorkerDir = Join-Path $installDir 'resources/app.asar.unpacked/electron'
+  $requiredWorkerFiles = @('whatsapp-service.cjs', 'whatsapp-session.cjs', 'whatsapp-messaging.cjs', 'whatsapp-command-queue.cjs')
+  foreach ($workerFile in $requiredWorkerFiles) {
+    if (!(Test-Path (Join-Path $unpackedWorkerDir $workerFile))) { throw "Unpacked WhatsApp worker dependency missing: $workerFile" }
+  }
 
   # Prefer the instrumented app that NSIS may have launched; otherwise start it explicitly.
   $appLaunchDeadline = (Get-Date).AddSeconds(15)

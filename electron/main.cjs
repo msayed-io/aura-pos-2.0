@@ -65,7 +65,9 @@ const whatsappSessionDir = path.join(dataDir, 'whatsapp-session');
 const whatsappRuntimePackagePath = app.isPackaged
   ? path.join(process.resourcesPath, 'whatsapp-runtime', 'package.json')
   : path.join(__dirname, 'whatsapp-runtime', 'package.json');
-const serviceEntry = path.join(__dirname, 'whatsapp-service.cjs');
+const serviceEntry = app.isPackaged
+  ? path.join(process.resourcesPath, 'app.asar.unpacked', 'electron', 'whatsapp-service.cjs')
+  : path.join(__dirname, 'whatsapp-service.cjs');
 const trayIconPath = path.join(__dirname, 'aura-icon.ico');
 const installedSmoke = process.env.AURA_INSTALLED_SMOKE === '1' && app.isPackaged;
 const installedSmokeReport = process.env.AURA_INSTALLED_SMOKE_REPORT;

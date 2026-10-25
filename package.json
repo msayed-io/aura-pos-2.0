@@ -146,7 +146,8 @@
     "asarUnpack": [
       ".next/standalone/**/*",
       ".next/standalone/node_modules/**/*.node",
-      ".next/standalone/node_modules/@img/**/*"
+      ".next/standalone/node_modules/@img/**/*",
+      "electron/whatsapp-*.cjs"
     ],
     "npmRebuild": false,
     "win": {

@@ -176,6 +176,9 @@ test('AI Gateway stays outside the EXE and only the internal route can process i
 
 test('installed Windows load smoke is opt-in, packaged-only, synthetic and local', () => {
   const main = read('electron/main.cjs');
+  const electronBuild = JSON.parse(read('package.json')).build;
+  assert.ok(electronBuild.asarUnpack.includes('electron/whatsapp-*.cjs'));
+  assert.match(main, /path\.join\(process\.resourcesPath, 'app\.asar\.unpacked', 'electron', 'whatsapp-service\.cjs'\)/);
   assert.match(main, /if \(!installedSmoke \|\| installedSmokeStarted \|\| !app\.isPackaged\) return/);
   assert.match(main, /postInternalWhatsApp\('smoke\.enable-agent', \{\}\)/);
   assert.match(main, /text: `synthetic smoke conversation \$\{index\}`/);
@@ -210,6 +213,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /soakDurationMs >= 10 \* 60 \* 1000/);
   assert.match(main, /result\.whatsappServiceMemoryMb = Math\.max/);
   const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
+  assert.match(windowsSmoke, /resources\/app\.asar\.unpacked\/electron/);
+  assert.match(windowsSmoke, /whatsapp-command-queue\.cjs/);
   assert.match(windowsSmoke, /'windowShown'/);
   assert.match(windowsSmoke, /smokeError=\$smokeErrorCode/);
   assert.match(windowsSmoke, /serviceError=\$serviceErrorCode/);
