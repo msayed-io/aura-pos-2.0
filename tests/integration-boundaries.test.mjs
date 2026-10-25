@@ -179,6 +179,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   const electronBuild = JSON.parse(read('package.json')).build;
   assert.ok(electronBuild.asarUnpack.includes('electron/whatsapp-*.cjs'));
   assert.match(main, /path\.join\(process\.resourcesPath, 'app\.asar\.unpacked', 'electron', 'whatsapp-service\.cjs'\)/);
+  const serviceReadyWait = main.indexOf("serviceSupervisor.once('ready'");
+  const syntheticLoad = main.indexOf('loadResults = await Promise.all');
+  assert.ok(serviceReadyWait >= 0 && serviceReadyWait < syntheticLoad, 'The installed performance load must start after WhatsApp worker initialization.');
   assert.match(main, /if \(!installedSmoke \|\| installedSmokeStarted \|\| !app\.isPackaged\) return/);
   assert.match(main, /postInternalWhatsApp\('smoke\.enable-agent', \{\}\)/);
   assert.match(main, /text: `synthetic smoke conversation \$\{index\}`/);

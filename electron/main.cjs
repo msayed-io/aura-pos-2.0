@@ -807,6 +807,14 @@ async function runInstalledSmoke() {
     }
     result.windowShown = mainWindowShowEvents > 0;
     if (!result.windowShown) throw new Error('SMOKE_WINDOW_NOT_SHOWN');
+    if (!serviceSupervisor) throw new Error('SMOKE_WHATSAPP_SUPERVISOR_MISSING');
+    if (!serviceSupervisor.readyAt) {
+      await new Promise((resolve, reject) => {
+        // Keep production restart behavior unchanged while allowing transient startup retries to become observable.
+        const readyTimer = setTimeout(() => reject(new Error('SMOKE_SERVICE_READY_TIMEOUT')), 120000);
+        serviceSupervisor.once('ready', () => { clearTimeout(readyTimer); resolve(); });
+      });
+    }
     const smokeSettings = await postInternalWhatsApp('smoke.enable-agent', {});
     if (smokeSettings?.enabled !== true) throw new Error('SMOKE_AGENT_NOT_ENABLED');
     const rendererStarted = await window.webContents.executeJavaScript(`(() => {
@@ -886,14 +894,6 @@ async function runInstalledSmoke() {
         } catch (error) { reject(error); }
       });
     });
-    if (!serviceSupervisor) throw new Error('SMOKE_WHATSAPP_SUPERVISOR_MISSING');
-    if (!serviceSupervisor.readyAt) {
-      await new Promise((resolve, reject) => {
-        // Keep production restart behavior unchanged while allowing transient startup retries to become observable.
-        const readyTimer = setTimeout(() => reject(new Error('SMOKE_SERVICE_READY_TIMEOUT')), 120000);
-        serviceSupervisor.once('ready', () => { clearTimeout(readyTimer); resolve(); });
-      });
-    }
     const gotQr = new Promise(resolve => serviceSupervisor.once('qr', qr => {
       result.qrObserved = typeof qr === 'string' && qr.length > 0;
       result.whatsappRuntimeLoaded = result.qrObserved;
