@@ -10,6 +10,11 @@ const serverRoot = path.join(root, '.next', 'standalone');
 const serverEntry = path.join(serverRoot, 'server.js');
 const dataDir = process.env.AURA_ELECTRON_WINDOW_DATA_DIR;
 const shutdownToken = process.env.AURA_ELECTRON_WINDOW_TOKEN;
+const inheritedEnv = Object.fromEntries(
+  ['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'LANG', 'LC_ALL', 'TZ', 'DISPLAY', 'WAYLAND_DISPLAY', 'XAUTHORITY', 'XDG_RUNTIME_DIR']
+    .filter(name => process.env[name] !== undefined)
+    .map(name => [name, process.env[name]]),
+);
 let server;
 let window;
 let hiddenEvents = 0;
@@ -26,8 +31,8 @@ async function freePort() {
 async function waitForHealth(base, exitPromise) {
   const deadline = Date.now() + 45000;
   while (Date.now() < deadline) {
-    const result = await Promise.race([exitPromise.then(() => 'exited'), fetch(`${base}/api/health`, { signal: AbortSignal.timeout(1200) }).then(async response => ({ response, body: await response.json() })).catch(() => null)]);
-    if (result === 'exited') throw new Error('standalone exited before health became ready');
+    const result = await Promise.race([exitPromise.then(exit => ({ exited: true, code: exit.code })), fetch(`${base}/api/health`, { signal: AbortSignal.timeout(1200) }).then(async response => ({ response, body: await response.json() })).catch(() => null)]);
+    if (result?.exited) throw new Error(`standalone exited before health became ready (code=${result.code})`);
     if (result?.response?.ok && result.body.status === 'ok' && result.body.database === 'ready') return;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
@@ -45,6 +50,7 @@ async function run() {
     windowsHide: true,
     stdio: 'ignore',
     env: {
+      ...inheritedEnv,
       NODE_ENV: 'production', HOSTNAME: '127.0.0.1', PORT: String(port),
       AURA_DATA_DIR: dataDir,
       AURA_MIGRATIONS_DIR: path.join(serverRoot, 'prisma', 'migrations'),

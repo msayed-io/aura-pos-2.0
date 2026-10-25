@@ -224,3 +224,8 @@ Prisma الموجود هو 6.19.3. وثائق Electron الرسمية تذكر �
 ### أول تشغيل Windows Actions
 
 انتهى التشغيل `40164506904` على commit `7a755617` بفشل `npm test` في اختبار `Gateway timeout aborts slow requests and stops after two retries`؛ على Windows انتهى event loop قبل إطلاق مؤقت `AbortSignal.timeout()` غير المُثبّت، فألغى Node test runner الاختبار. لم يبدأ بناء Next أو installer/installed smoke، وكانت وظيفة النشر `skipped`؛ لم يُنشأ tag أو Release ولم يُدمج `master`. ثُبّت الاختبار بمؤقّت watchdog مرجعي، مع اشتراط رصد abort في المحاولات الثلاث؛ اجتازت النسخة المعدلة `npm test` ‏96/96 و`npm run lint` محلياً. إعادة Windows Actions على التغيير المصحح ما زالت مطلوبة قبل الدمج.
+
+
+### ثاني تشغيل Windows Actions
+
+انتهى التشغيل `40164905045` على commit `0fcd6b8` بنجاح في تثبيت الاعتمادات وPrisma و`typecheck` و`lint` والاختبارات ‏96/96 وبناء Next وStandalone storage smoke؛ تعثر فقط اختبار Electron window لأن utility process الخاص بالـfixture خرج قبل health readiness. كان fixture يمرر بيئة صريحة مقتصرة على متغيرات التطبيق ولا تورّث متغيرات النظام الأساسية على Windows. أُضيفت له قائمة allowlist مماثلة للمشرف الفعلي (`PATH` و`SYSTEMROOT` و`TEMP` وغيرها)، مع تضمين رمز خروج العملية في رسالة الفشل. اجتاز Electron window smoke المحلي ‏1/1، وأعيدت `npm test` ‏96/96 و`npm run lint` محلياً. لم يبدأ QR/installer/soak، وبقيت وظيفة Release `skipped`؛ إعادة Windows Actions مطلوبة.
