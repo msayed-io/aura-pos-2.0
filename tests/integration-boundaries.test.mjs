@@ -259,6 +259,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /Using NSIS-launched installed app/);
   assert.match(windowsSmoke, /NSIS did not auto-launch the installed app/);
   assert.match(windowsSmoke, /AddMinutes\(10\)/);
+  assert.match(windowsSmoke, /soakStartedAt\.AddMinutes\(10\)\.AddSeconds\(5\)/);
   assert.match(windowsSmoke, /privatePeakGrowthPercent -gt 10\.0/);
   assert.match(windowsSmoke, /peakHandleGrowthPercent -gt 10\.0/);
   assert.match(windowsSmoke, /if \(!\$processCountStable\)/);
@@ -267,6 +268,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /CreationDate/);
   assert.match(windowsSmoke, /KernelModeTime/);
   assert.match(windowsSmoke, /PrivatePageCount/);
+  assert.match(windowsSmoke, /nextSampleAt = \$nextSampleAt\.AddSeconds\(2\)/);
+  assert.doesNotMatch(windowsSmoke, /\$nextSampleAt = \$now\.AddSeconds\(2\)/);
   assert.match(windowsSmoke, /observedProcessIdentities\.Contains/);
   assert.match(windowsSmoke, /lastFiveMinutesCoverageSeconds -lt 300/);
   assert.match(windowsSmoke, /cpuIntervalWeightSeconds -lt 300/);

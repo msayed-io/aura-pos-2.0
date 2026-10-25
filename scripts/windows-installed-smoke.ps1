@@ -162,7 +162,7 @@ try {
   if ($ready.PSObject.Properties.Name -contains 'qr' -or $ready.PSObject.Properties.Name -contains 'qrPayload') { throw 'Unsafe QR field in readiness report.' }
 
   # The Main process has warmed the SQLite/Gateway path, hidden its window, and reached Baileys QR.
-  # Keep the installed app idle for a full 10-minute soak while sampling its entire process tree.
+  # Keep the installed app idle for at least 10 minutes, with a small measurement margin, while sampling its entire process tree.
   $resourceSamples = @()
   $observedProcessIdentities = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
   $cpuCount = [math]::Max(1, (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)
@@ -172,7 +172,7 @@ try {
   $soakStartedAt = Get-Date
   $lastSampleAt = $soakStartedAt
   $nextSampleAt = $soakStartedAt.AddSeconds(2)
-  $soakDeadline = $soakStartedAt.AddMinutes(10)
+  $soakDeadline = $soakStartedAt.AddMinutes(10).AddSeconds(5)
   while ((Get-Date) -lt $soakDeadline) {
     $waitMilliseconds = [math]::Ceiling(($nextSampleAt - (Get-Date)).TotalMilliseconds)
     if ($waitMilliseconds -gt 0) { Start-Sleep -Milliseconds $waitMilliseconds }
@@ -225,7 +225,7 @@ try {
     }
     $lastSnapshot = $snapshot
     $lastSampleAt = $now
-    $nextSampleAt = $now.AddSeconds(2)
+    $nextSampleAt = $nextSampleAt.AddSeconds(2)
   }
   $soakDurationSeconds = [math]::Round(((Get-Date) - $soakStartedAt).TotalSeconds, 1)
   if ($soakDurationSeconds -lt 600) { throw "Installed soak lasted only $soakDurationSeconds seconds." }
