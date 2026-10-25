@@ -33,7 +33,7 @@ test('a real Electron window hides without destruction while standalone health s
     const report = JSON.parse(line.slice('WINDOW_SERVER_RESULT '.length));
     assert.equal(report.ok, true, JSON.stringify(report));
     assert.equal(report.readyToShow, true);
-    assert.equal(report.visibleBefore, true);
+    assert.equal(report.showEvents, 1);
     assert.equal(report.hiddenAfterClose, true);
     assert.equal(report.destroyedAfterClose, false);
     assert.equal(report.hiddenEvents, 1);

@@ -18,6 +18,7 @@ const inheritedEnv = Object.fromEntries(
 let server;
 let window;
 let hiddenEvents = 0;
+let showEvents = 0;
 
 async function freePort() {
   const probe = createServer();
@@ -70,7 +71,7 @@ async function run() {
   await window.loadURL(base);
   await readyToShowPromise;
   const shownPromise = new Promise((resolve, reject) => {
-    const onShow = () => { clearTimeout(timer); resolve(); };
+    const onShow = () => { showEvents += 1; clearTimeout(timer); resolve(); };
     const timer = setTimeout(() => {
       window.removeListener('show', onShow);
       reject(new Error('window show event was not emitted'));
@@ -96,7 +97,7 @@ async function run() {
   server.kill();
   const exit = await Promise.race([exitPromise, new Promise(resolve => setTimeout(() => resolve(null), 5000))]);
   if (!exit) throw new Error('standalone did not exit after utilityProcess kill');
-  const report = { ok: true, readyToShow, visibleBefore, hiddenAfterClose, destroyedAfterClose, hiddenEvents, healthStatus: health.status, healthDatabase: healthBody.database, checkpointStatus: shutdown.status, serverExitCode: exit.code };
+  const report = { ok: true, readyToShow, showEvents, visibleBefore, hiddenAfterClose, destroyedAfterClose, hiddenEvents, healthStatus: health.status, healthDatabase: healthBody.database, checkpointStatus: shutdown.status, serverExitCode: exit.code };
   process.stdout.write(`WINDOW_SERVER_RESULT ${JSON.stringify(report)}\n`);
   if (window && !window.isDestroyed()) window.destroy();
   app.exit(0);
