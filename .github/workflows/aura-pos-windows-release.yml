@@ -2,15 +2,15 @@ name: Aura POS Windows Release
 
 on:
   push:
-    branches: [master]
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
+    branches: [master, 'feat/whatsapp-local-agent']
+  workflow_dispatch:
 
 concurrency:
-  group: aura-pos-windows-release-${{ github.ref }}
+  group: aura-pos-windows-${{ github.ref }}
   cancel-in-progress: false
+
+permissions:
+  contents: read
 
 env:
   NODE_ENV: production
@@ -18,12 +18,14 @@ env:
   ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\\.electron-builder-cache
 
 jobs:
-  build-test-package-release:
-    name: Build, test, package and release Windows EXE
-    runs-on: windows-2025
-    timeout-minutes: 45
+  validate-package-smoke:
+    name: Windows validate, package and installed smoke
+    runs-on: windows-latest
+    timeout-minutes: 90
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
-      - name: Checkout exact pushed revision
+      - name: Checkout exact revision
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -34,66 +36,275 @@ jobs:
           node-version: 22.x
           cache: npm
 
-      - name: Install dependencies
-        shell: pwsh
-        run: npm install --include=dev --no-audit --no-fund
+      - name: Install locked dependencies
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Generate Prisma Windows client
+        run: npm run db:generate
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Lint
         run: npm run lint
 
-      - name: Run regression tests
+      - name: Run tests
         run: npm test
 
-      - name: Calculate next semantic version
+      - name: Build Next standalone
+        run: npm run build
+
+      - name: Standalone storage smoke
+        run: npm run test:standalone
+
+      - name: Electron window and tray smoke
+        run: npm run test:electron-window
+
+      - name: WhatsApp QR smoke
+        run: npm run test:whatsapp-qr
+
+      - name: Calculate next semantic version after source tests
         id: version
         shell: pwsh
         run: |
           git fetch --tags --force
+          if ($LASTEXITCODE -ne 0) { throw 'Could not fetch remote release tags.' }
           $package = Get-Content package.json -Raw | ConvertFrom-Json
-          $base = [version]$package.version
-          $tags = @(git tag --list "v*" --sort=-version:refname)
-          $candidate = $base
-          if ($tags.Count -gt 0) {
-            $latestText = ($tags[0] -replace '^v', '')
-            try {
-              $latest = [version]$latestText
-              if ($latest -ge $candidate) { $candidate = [version]::new($latest.Major, $latest.Minor, ($latest.Build + 1)) }
-            } catch { Write-Host "Ignoring non-semver tag $($tags[0])" }
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          if ($package.version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid package version: $($package.version)" }
+          if ($lock.version -ne $package.version -or $lock.packages[''].version -ne $package.version) {
+            throw 'package.json and package-lock.json versions differ.'
           }
-          while (git ls-remote --exit-code --tags origin "refs/tags/v$candidate" 2>$null) { $candidate = [version]::new($candidate.Major, $candidate.Minor, ($candidate.Build + 1)) }
+          $candidate = [version]$package.version
+          $tagLines = @(git tag --list 'v*')
+          if ($LASTEXITCODE -ne 0) { throw 'Could not list release tags.' }
+          $semanticTags = @($tagLines | ForEach-Object {
+            if ($_ -match '^v(\d+\.\d+\.\d+)$') { [pscustomobject]@{ tag = $_; version = [version]$Matches[1] } }
+          })
+          if ($semanticTags.Count -gt 0) {
+            $latest = $semanticTags | Sort-Object -Property version -Descending | Select-Object -First 1
+            if ($candidate -le $latest.version) {
+              $candidate = [version]::new($latest.version.Major, $latest.version.Minor, ($latest.version.Build + 1))
+            }
+          }
+          while ($true) {
+            $tag = "v$($candidate.ToString())"
+            $remoteTag = @(git ls-remote --exit-code --tags origin "refs/tags/$tag" 2>$null)
+            $remoteTagExit = $LASTEXITCODE
+            if ($remoteTagExit -eq 2) { break }
+            if ($remoteTagExit -ne 0) { throw "Could not check remote tag $tag (git exit $remoteTagExit)." }
+            $candidate = [version]::new($candidate.Major, $candidate.Minor, ($candidate.Build + 1))
+          }
           $version = $candidate.ToString()
           npm version $version --no-git-tag-version --allow-same-version
+          if ($LASTEXITCODE -ne 0) { throw "Could not set runner-local release version $version." }
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          if ($package.version -ne $version -or $lock.version -ne $version -or $lock.packages[''].version -ne $version) {
+            throw 'Runner-local package and lock versions do not match the calculated release version.'
+          }
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "version=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Building Aura_POS_v$version.exe"
+          Write-Host "Selected runner-local version $version after source tests; the official tag/release is deferred until Windows smoke passes."
 
-      - name: Build Next.js standalone server
-        run: npm run build
-
-      - name: Package Electron NSIS installer
+      - name: Package NSIS installer
         run: npm run electron:dist
 
-      - name: Verify exactly one required EXE
+      - name: Verify one version-matched installer
         shell: pwsh
         run: |
-          $expected = "Aura_POS_v$env:version.exe"
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          if ($package.version -notmatch '^\d+\.\d+\.\d+$') { throw "Invalid package version: $($package.version)" }
+          $expected = "Aura_POS_2.0_v$($package.version).exe"
           $files = @(Get-ChildItem -Path dist -Filter *.exe -File)
-          if ($files.Count -ne 1) { throw "Expected exactly one EXE, found $($files.Count)" }
-          if ($files[0].Name -ne $expected) { throw "Expected $expected, found $($files[0].Name)" }
-          Write-Host "Verified $($files[0].FullName)"
+          if ($files.Count -ne 1 -or $files[0].Name -ne $expected) { throw "Expected exactly $expected; found $($files.Name -join ', ')" }
+          Write-Host "Verified installer $expected ($($files[0].Length) bytes)."
 
-      - name: Upload verified EXE artifact
+      - name: Installed NSIS smoke and package security scan
+        shell: pwsh
+        env:
+          AURA_INSTALLER: ${{ github.workspace }}\dist\Aura_POS_2.0_v${{ steps.version.outputs.version }}.exe
+        run: ./scripts/windows-installed-smoke.ps1
+
+      - name: Upload verified installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Aura_POS_v${{ steps.version.outputs.version }}
-          path: dist/Aura_POS_v${{ steps.version.outputs.version }}.exe
+          name: Aura_POS_2.0_v${{ steps.version.outputs.version }}
+          path: dist/Aura_POS_2.0_v${{ steps.version.outputs.version }}.exe
           if-no-files-found: error
           retention-days: 30
 
-      - name: Create immutable GitHub Release and tag
+      - name: Upload Windows resource sample
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installed-resource-sample-${{ github.run_id }}
+          path: windows-installed-resource-sample.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    name: Publish official GitHub Release
+    if: github.ref == 'refs/heads/master'
+    needs: validate-package-smoke
+    runs-on: windows-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout exact validated revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      - name: Download validated installer
+        uses: actions/download-artifact@v4
+        with:
+          name: Aura_POS_2.0_v${{ needs.validate-package-smoke.outputs.version }}
+          path: release-assets
+
+      - name: Validate version and preflight duplicate tag or release
+        id: release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $asset = "dist/Aura_POS_v$env:version.exe"
-          gh release create "v$env:version" $asset --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "Aura POS v$env:version" --generate-notes
+          $package = Get-Content package.json -Raw | ConvertFrom-Json
+          $version = '${{ needs.validate-package-smoke.outputs.version }}'
+          $tag = "v$version"
+          $repo = '${{ github.repository }}'
+          $lock = Get-Content package-lock.json -Raw | ConvertFrom-Json -AsHashtable
+          if ($package.version -notmatch '^\d+\.\d+\.\d+$' -or $lock.version -ne $package.version -or $lock.packages[''].version -ne $package.version) {
+            throw 'Source package.json and package-lock.json are inconsistent.'
+          }
+          if ([version]$version -lt [version]$package.version) { throw "Validated artifact version ($version) is behind source package version ($($package.version))." }
+          $existingTags = git tag --list $tag
+          if ($LASTEXITCODE -ne 0) { throw "Could not check whether tag $tag exists." }
+          if ($existingTags) { throw "Tag already exists: $tag" }
+          $existingRelease = gh release view $tag --repo $repo --json tagName 2>$null
+          if ($LASTEXITCODE -eq 0) { throw "Release already exists: $tag" }
+          $asset = "release-assets/Aura_POS_2.0_v$version.exe"
+          $files = @(Get-ChildItem release-assets -File)
+          if (!(Test-Path $asset) -or $files.Count -ne 1 -or $files[0].Name -ne "Aura_POS_2.0_v$version.exe" -or $files[0].Length -le 0) {
+            throw 'Downloaded artifact must contain exactly one non-empty, version-matched EXE.'
+          }
+          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Create draft, upload, verify and publish release transactionally
+        id: publish_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.release.outputs.tag }}'
+          $asset = '${{ steps.release.outputs.asset }}'
+          $expected = "Aura_POS_2.0_v${{ needs.validate-package-smoke.outputs.version }}.exe"
+          $repo = '${{ github.repository }}'
+          $sha = '${{ github.sha }}'
+          $tagMarker = "Aura POS release run:$env:GITHUB_RUN_ID"
+          $draftTitle = "Aura POS $tag [workflow-run:$env:GITHUB_RUN_ID]"
+          try {
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git tag -a $tag $sha -m $tagMarker
+            if ($LASTEXITCODE -ne 0) { throw "Could not create annotated tag $tag." }
+            git push origin "refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "Could not push the new release tag $tag." }
+
+            $tagObject = (git cat-file -p $tag) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or $tagObject -notmatch [regex]::Escape($tagMarker)) {
+              throw "Could not verify ownership marker on release tag $tag."
+            }
+            $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $sha) { throw "Release tag $tag does not point to the validated master commit." }
+
+            gh release create $tag --repo $repo --target $sha --title $draftTitle --generate-notes --draft --verify-tag
+            if ($LASTEXITCODE -ne 0) { throw 'Could not create draft release.' }
+
+            gh release upload $tag $asset --repo $repo
+            if ($LASTEXITCODE -ne 0) { throw 'Could not upload the verified installer to the draft release.' }
+
+            $draftJson = gh release view $tag --repo $repo --json tagName,isDraft,targetCommitish,name,assets
+            if ($LASTEXITCODE -ne 0) { throw 'Could not verify the draft release.' }
+            $draft = $draftJson | ConvertFrom-Json
+            if ($draft.tagName -ne $tag -or $draft.isDraft -ne $true -or $draft.targetCommitish -ne $sha -or $draft.name -ne $draftTitle) {
+              throw 'Draft release tag, state or target commit mismatch.'
+            }
+            if ($draft.assets.Count -ne 1 -or $draft.assets[0].name -ne $expected -or [long]$draft.assets[0].size -le 0) {
+              throw 'Draft release must contain exactly one non-empty, version-matched EXE.'
+            }
+
+            gh release edit $tag --repo $repo --title "Aura POS $tag" --draft=false
+            if ($LASTEXITCODE -ne 0) { throw 'Could not publish the verified draft release.' }
+            $publishedJson = gh release view $tag --repo $repo --json tagName,isDraft,name,assets
+            if ($LASTEXITCODE -ne 0) { throw 'Could not verify the published release.' }
+            $published = $publishedJson | ConvertFrom-Json
+            if ($published.tagName -ne $tag -or $published.isDraft -ne $false -or $published.name -ne "Aura POS $tag") { throw 'Published release tag/state/title mismatch.' }
+            if ($published.assets.Count -ne 1 -or $published.assets[0].name -ne $expected -or [long]$published.assets[0].size -le 0) {
+              throw 'Published release must contain exactly one non-empty, version-matched EXE.'
+            }
+            $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $sha) { throw "Published tag $tag does not point to the validated master commit." }
+            Write-Host "Published $tag with exactly one verified installer at commit $sha."
+          } catch {
+            throw "Release transaction failed: $($_.Exception.Message)"
+          }
+
+      - name: Remove incomplete release or tag after failure/cancellation
+        if: (failure() || cancelled()) && steps.release.outputs.tag != '' && steps.publish_release.outcome != 'success'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ steps.release.outputs.tag }}'
+          $repo = '${{ github.repository }}'
+          $sha = '${{ github.sha }}'
+          $tagMarker = "Aura POS release run:$env:GITHUB_RUN_ID"
+          $draftTitle = "Aura POS $tag [workflow-run:$env:GITHUB_RUN_ID]"
+          $finalTitle = "Aura POS $tag"
+          $expected = "Aura_POS_2.0_v${{ needs.validate-package-smoke.outputs.version }}.exe"
+          $releaseResponse = gh api "repos/$repo/releases/tags/$tag" 2>&1
+          $releaseExit = $LASTEXITCODE
+          if ($releaseExit -eq 0) {
+            $release = $releaseResponse | ConvertFrom-Json
+            git fetch origin "refs/tags/$tag:refs/tags/$tag"
+            if ($LASTEXITCODE -ne 0) { throw "Cannot verify tag $tag for cleanup; refusing destructive cleanup." }
+            $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+            if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $sha) { throw "Refusing to delete release $tag because its tag does not match this validated commit." }
+            $tagObject = (git cat-file -p $tag) -join "`n"
+            if ($LASTEXITCODE -ne 0) { throw "Could not inspect tag object $tag." }
+            $tagOwnedByRun = $tagObject -match [regex]::Escape($tagMarker)
+            if ($tagOwnedByRun -and $release.tag_name -eq $tag -and $release.name -eq $draftTitle) {
+              gh release delete $tag --repo $repo --cleanup-tag --yes
+              if ($LASTEXITCODE -ne 0) { throw "Failed to remove this run's incomplete release/tag $tag." }
+              Write-Host "Removed this run's incomplete release/tag $tag."
+            } elseif ($tagOwnedByRun -and $release.tag_name -eq $tag -and $release.name -eq $finalTitle -and $release.draft -ne $true -and $release.assets.Count -eq 1 -and $release.assets[0].name -eq $expected -and [long]$release.assets[0].size -gt 0) {
+              Write-Host "Preserved the fully published, verified release $tag; cancellation arrived after publication."
+            } else {
+              throw "Refusing to delete release $tag because this workflow cannot prove ownership or completeness."
+            }
+          } else {
+            $refResponse = gh api "repos/$repo/git/ref/tags/$tag" 2>&1
+            $refExit = $LASTEXITCODE
+            if ($refExit -eq 0) {
+              git fetch origin "refs/tags/$tag:refs/tags/$tag"
+              if ($LASTEXITCODE -ne 0) { throw "Cannot inspect tag $tag for cleanup." }
+              $tagCommit = (git rev-parse "$tag^{commit}").Trim()
+              if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $sha) { throw "Refusing to delete unexpected tag $tag." }
+              $tagObject = (git cat-file -p $tag) -join "`n"
+              if ($LASTEXITCODE -ne 0 -or $tagObject -notmatch [regex]::Escape($tagMarker)) { throw "Refusing to delete tag $tag without this run's ownership marker." }
+              git push origin ":refs/tags/$tag"
+              if ($LASTEXITCODE -ne 0) { throw "Failed to remove incomplete tag $tag." }
+              Write-Host "Removed this run's incomplete tag $tag."
+            } elseif (($releaseResponse -join ' ') -match 'Not Found|HTTP 404' -and ($refResponse -join ' ') -match 'Not Found|HTTP 404') {
+              Write-Host "No partial release or tag exists for $tag."
+            } else {
+              throw "Could not determine whether incomplete release/tag $tag exists; manual inspection is required."
+            }
+          }

@@ -58,7 +58,7 @@ const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({ isOpen, onClo
             <div className="flex-shrink-0 flex flex-col items-center">
               <h3 className="text-center font-bold mb-2 text-neo-secondary">فاتورة الصالة</h3>
               <div className="bg-white rounded-lg shadow-lg w-[80mm] flex-shrink-0">
-                 <PrintableDineInInvoice order={order} cashierName={cashierName} />
+                 <PrintableDineInInvoice order={order} cashierName={cashierName} logoUrl={logoUrl} />
               </div>
             </div>
 
@@ -66,7 +66,7 @@ const InvoicePreviewModal: React.FC<InvoicePreviewModalProps> = ({ isOpen, onClo
             <div className="flex-shrink-0 flex flex-col items-center">
               <h3 className="text-center font-bold mb-2 text-neo-secondary">فاتورة التوصيل/الاستلام</h3>
               <div className="bg-white rounded-lg shadow-lg w-[80mm] flex-shrink-0">
-                 <PrintableDeliveryInvoice order={order} cashierName={cashierName} />
+                 <PrintableDeliveryInvoice order={order} cashierName={cashierName} logoUrl={logoUrl} />
               </div>
             </div>
 

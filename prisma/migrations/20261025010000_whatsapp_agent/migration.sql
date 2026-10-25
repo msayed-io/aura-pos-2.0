@@ -1,0 +1,16 @@
+ALTER TABLE "LocalOrder" ADD COLUMN "source" TEXT NOT NULL DEFAULT 'POS';
+ALTER TABLE "LocalOrder" ADD COLUMN "draftId" TEXT;
+ALTER TABLE "LocalOrder" ADD COLUMN "printedAt" BIGINT;
+CREATE UNIQUE INDEX "LocalOrder_draftId_key" ON "LocalOrder"("draftId");
+CREATE TABLE "LocalWhatsAppConversation" ("id" TEXT NOT NULL PRIMARY KEY, "accountId" TEXT NOT NULL, "conversationHash" TEXT NOT NULL, "state" TEXT NOT NULL DEFAULT 'active', "lastMessageAt" BIGINT NOT NULL, "updatedAt" BIGINT NOT NULL);
+CREATE UNIQUE INDEX "LocalWhatsAppConversation_accountId_conversationHash_key" ON "LocalWhatsAppConversation"("accountId", "conversationHash");
+CREATE INDEX "LocalWhatsAppConversation_lastMessageAt_idx" ON "LocalWhatsAppConversation"("lastMessageAt");
+CREATE TABLE "LocalWhatsAppMessage" ("id" TEXT NOT NULL PRIMARY KEY, "accountId" TEXT NOT NULL, "conversationHash" TEXT NOT NULL, "messageId" TEXT NOT NULL, "text" TEXT NOT NULL, "status" TEXT NOT NULL DEFAULT 'received', "attempts" INTEGER NOT NULL DEFAULT 0, "receivedAt" BIGINT NOT NULL, "updatedAt" BIGINT NOT NULL, "replyText" TEXT, "replyId" TEXT, "replyStatus" TEXT, "encryptedReplyTarget" TEXT, CONSTRAINT "LocalWhatsAppMessage_accountId_conversationHash_fkey" FOREIGN KEY ("accountId", "conversationHash") REFERENCES "LocalWhatsAppConversation" ("accountId", "conversationHash") ON DELETE CASCADE ON UPDATE CASCADE);
+CREATE UNIQUE INDEX "LocalWhatsAppMessage_accountId_conversationHash_messageId_key" ON "LocalWhatsAppMessage"("accountId", "conversationHash", "messageId");
+CREATE INDEX "LocalWhatsAppMessage_status_updatedAt_idx" ON "LocalWhatsAppMessage"("status", "updatedAt");
+CREATE INDEX "LocalWhatsAppMessage_conversationHash_receivedAt_idx" ON "LocalWhatsAppMessage"("conversationHash", "receivedAt");
+CREATE TABLE "LocalWhatsAppDraft" ("id" TEXT NOT NULL PRIMARY KEY, "accountId" TEXT NOT NULL, "conversationHash" TEXT NOT NULL, "status" TEXT NOT NULL, "version" INTEGER NOT NULL, "summaryVersion" INTEGER, "data" TEXT NOT NULL, "createdAt" BIGINT NOT NULL, "updatedAt" BIGINT NOT NULL, "orderId" TEXT, CONSTRAINT "LocalWhatsAppDraft_accountId_conversationHash_fkey" FOREIGN KEY ("accountId", "conversationHash") REFERENCES "LocalWhatsAppConversation" ("accountId", "conversationHash") ON DELETE CASCADE ON UPDATE CASCADE, CONSTRAINT "LocalWhatsAppDraft_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "LocalOrder" ("id") ON DELETE SET NULL ON UPDATE CASCADE);
+CREATE UNIQUE INDEX "LocalWhatsAppDraft_orderId_key" ON "LocalWhatsAppDraft"("orderId");
+CREATE UNIQUE INDEX "LocalWhatsAppDraft_one_active_per_conversation" ON "LocalWhatsAppDraft"("accountId", "conversationHash") WHERE "status" IN ('collecting', 'awaiting_confirmation', 'confirmed');
+CREATE TABLE "LocalPrintJob" ("id" TEXT NOT NULL PRIMARY KEY, "orderId" TEXT NOT NULL, "invoiceType" TEXT NOT NULL, "status" TEXT NOT NULL, "attempts" INTEGER NOT NULL DEFAULT 0, "errorCode" TEXT, "createdAt" BIGINT NOT NULL, "updatedAt" BIGINT NOT NULL, "printedAt" BIGINT, CONSTRAINT "LocalPrintJob_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "LocalOrder" ("id") ON DELETE CASCADE ON UPDATE CASCADE);
+CREATE UNIQUE INDEX "LocalPrintJob_orderId_invoiceType_key" ON "LocalPrintJob"("orderId", "invoiceType");

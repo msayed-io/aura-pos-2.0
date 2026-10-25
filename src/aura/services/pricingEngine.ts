@@ -192,6 +192,7 @@ class PricingEngine {
         const conditionsMet = this.evaluateConditions(rule.conditions, {
           ...context,
           currentTime,
+          basePrice,
         });
 
         if (!conditionsMet) continue;
@@ -559,6 +560,10 @@ class PricingEngine {
           if (Array.isArray(days)) {
             const currentDay = now.getDay(); // 0=Sunday, 6=Saturday
             return days.some(d => Number(d) === currentDay);
+          }
+          if (typeof days === 'string') {
+            const currentDay = now.getDay();
+            return days.split(',').some(day => Number(day.trim()) === currentDay);
           }
           return false;
         }

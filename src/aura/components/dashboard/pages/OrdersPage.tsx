@@ -85,8 +85,16 @@ const OrdersPage: React.FC<OrdersPageProps> = ({ searchQuery, orderTypeToShow })
 
                     newlyReceivedOrders.forEach(newOrder => {
                         // Auto print incoming orders as standard restaurant receipts
-                        printOrderInvoice(newOrder, 'delivery', logoUrl, cashierId, cashierName);
-                        printOrderInvoice(newOrder, 'kitchen', logoUrl, cashierId, cashierName);
+                        void (async () => {
+                            for (const invoiceType of ['delivery', 'kitchen'] as const) {
+                                try {
+                                    await printOrderInvoice(newOrder, invoiceType, logoUrl, cashierId, cashierName);
+                                } catch (error) {
+                                    const message = error instanceof Error ? error.message : 'تعذر إرسال مهمة الطباعة.';
+                                    showToast({ message: `تعذرت طباعة إحدى فواتير الطلب الوارد. راجع الطلب وحالة الطباعة. ${message}`, type: 'error' });
+                                }
+                            }
+                        })();
                     });
 
                      newIds.forEach(id => {

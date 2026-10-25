@@ -43,7 +43,7 @@ const SlidingTabs: React.FC<SlidingTabsProps> = ({ tabs, activeTab, onChange }) 
       {tabs.map((tab, idx) => (
         <button
           key={tab.id}
-          ref={el => tabsRef.current[idx] = el}
+          ref={el => { tabsRef.current[idx] = el; }}
           onClick={() => onChange(tab.id)}
           className={`relative z-10 flex items-center gap-2.5 px-6 py-2 rounded-xl transition-colors duration-300 whitespace-nowrap
             ${activeTab === tab.id ? 'text-neo-primary font-bold' : 'text-gray-500 hover:text-neo-secondary'}

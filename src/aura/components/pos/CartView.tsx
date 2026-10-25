@@ -115,9 +115,9 @@ const CartView: React.FC<CartViewProps> = (props) => {
                                 <div className="p-2 flex flex-col flex-grow">
                                     <p className="text-xs font-bold text-gray-800 line-clamp-1">{rec.name}</p>
                                     {/* [PRICING ENGINE INTEGRATION] Show discounted price in upsell recommendations */}
-                                    {(rec as Record<string, unknown>)._originalPrice != null && (rec as Record<string, unknown>)._originalPrice !== rec.price ? (
+                                    {rec._originalPrice != null && rec._originalPrice !== rec.price ? (
                                         <div className="mt-auto pt-1 flex flex-col">
-                                            <span className="text-[9px] text-gray-400 font-mono line-through">{(rec as Record<string, unknown>)._originalPrice as number} ج.م</span>
+                                            <span className="text-[9px] text-gray-400 font-mono line-through">{rec._originalPrice} ج.م</span>
                                             <span className="text-xs text-neo-accent font-mono font-bold">{rec.price} ج.م</span>
                                         </div>
                                     ) : (

@@ -45,6 +45,10 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 local-*
+!/local-services/
+!/local-services/**
+!/src/app/api/local-store/
+!/src/app/api/local-store/**
 .claude
 *.log
 dev.log
@@ -59,3 +63,9 @@ server.log
 # Local project artifacts and uploaded source archives
 upload/
 db/*.db
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.sqlite.*
+*.db.*
