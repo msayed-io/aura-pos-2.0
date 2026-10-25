@@ -111,12 +111,21 @@ try {
   $readyDeadline = (Get-Date).AddMinutes(4)
   while (!(Test-Path $readyReport) -and (Get-Date) -lt $readyDeadline) {
     $app.Refresh()
-    if ($app.HasExited) { throw "Installed application exited before soak readiness ($($app.ExitCode))." }
+    if ($app.HasExited) {
+      $smokeErrorCode = 'unavailable'
+      if (Test-Path $report) {
+        try {
+          $earlyReport = Get-Content $report -Raw | ConvertFrom-Json
+          if ($earlyReport.errorCode -match '^[A-Z0-9_]{1,48}$') { $smokeErrorCode = $earlyReport.errorCode }
+        } catch { $smokeErrorCode = 'unreadable' }
+      }
+      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode)."
+    }
     Start-Sleep -Milliseconds 500
   }
   if (!(Test-Path $readyReport)) { throw 'Timed out waiting for installed load/QR readiness.' }
   $ready = Get-Content $readyReport -Raw | ConvertFrom-Json
-  $readyRequired = @('healthReady','databaseReady','trayHide','serverContinued','serviceContinued','whatsappRuntimeLoaded','qrObserved','performanceWithinTarget')
+  $readyRequired = @('healthReady','databaseReady','windowShown','trayHide','serverContinued','serviceContinued','whatsappRuntimeLoaded','qrObserved','performanceWithinTarget')
   foreach ($name in $readyRequired) { if ($ready.$name -ne $true) { throw "Installed readiness check failed: $name ($($ready.errorCode))" } }
   if ($ready.loadConversations -ne 20 -or $ready.loadReplies -ne 20 -or $ready.loadOrders -ne 0) { throw 'Installed 20-conversation load counts are invalid.' }
   if ([int]$ready.mainEventLoopSamples -lt 100 -or [int]$ready.serverEventLoopSamples -lt 100 -or [int]$ready.rendererEventLoopSamples -lt 20) { throw 'Installed event-loop p99 sample counts are insufficient.' }

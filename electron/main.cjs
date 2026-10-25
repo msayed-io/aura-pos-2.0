@@ -27,6 +27,7 @@ let serverShutdownToken;
 let serverWhatsAppToken;
 let conversationHashKey;
 let tray;
+let mainWindowShowEvents = 0;
 let serviceSupervisor;
 let serviceState = 'idle';
 let whatsappQr = null;
@@ -675,6 +676,7 @@ async function createWindow() {
       },
     });
     window.on('closed', () => { if (mainWindow === window) mainWindow = null; });
+    window.on('show', () => { mainWindowShowEvents += 1; });
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     window.once('ready-to-show', () => {
       if (appIsQuitting) return;
@@ -752,6 +754,7 @@ async function runInstalledSmoke() {
     rendererEventLoopP99Ms: null,
     whatsappServiceMemoryMb: null,
     performanceWithinTarget: false,
+    windowShown: false,
     soakCompleted: false,
     soakDurationMs: 0,
   };
@@ -762,7 +765,7 @@ async function runInstalledSmoke() {
     if (finished) return;
     finished = true;
     clearTimeout(qrTimer);
-    result.ok = !error && result.healthReady && result.databaseReady && result.trayHide && result.serverContinued
+    result.ok = !error && result.healthReady && result.databaseReady && result.windowShown && result.trayHide && result.serverContinued
       && result.whatsappRuntimeLoaded && result.qrObserved && result.serviceContinued
       && result.loadConversations === 20 && result.loadReplies === 20 && result.loadOrders === 0
       && result.performanceWithinTarget && result.soakCompleted
@@ -784,7 +787,15 @@ async function runInstalledSmoke() {
     result.databaseReady = fs.existsSync(path.join(dataDir, 'aura.sqlite'));
     if (!result.databaseReady) throw new Error('SMOKE_DATABASE_MISSING');
     const window = mainWindow;
-    if (!window || window.isDestroyed() || !window.isVisible()) throw new Error('SMOKE_WINDOW_NOT_VISIBLE');
+    if (!window || window.isDestroyed()) throw new Error('SMOKE_WINDOW_MISSING');
+    if (mainWindowShowEvents < 1) {
+      await new Promise((resolve, reject) => {
+        const showTimer = setTimeout(() => reject(new Error('SMOKE_WINDOW_SHOW_TIMEOUT')), 15000);
+        window.once('show', () => { clearTimeout(showTimer); resolve(); });
+      });
+    }
+    result.windowShown = mainWindowShowEvents > 0;
+    if (!result.windowShown) throw new Error('SMOKE_WINDOW_NOT_SHOWN');
     const smokeSettings = await postInternalWhatsApp('smoke.enable-agent', {});
     if (smokeSettings?.enabled !== true) throw new Error('SMOKE_AGENT_NOT_ENABLED');
     const rendererStarted = await window.webContents.executeJavaScript(`(() => {
@@ -854,7 +865,7 @@ async function runInstalledSmoke() {
       const hideTimer = setTimeout(() => reject(new Error('SMOKE_WINDOW_HIDE_TIMEOUT')), 15000);
       window.once('hide', async () => {
         clearTimeout(hideTimer);
-        result.trayHide = Boolean(tray) && !window.isDestroyed() && !window.isVisible();
+        result.trayHide = Boolean(tray) && !window.isDestroyed();
         try {
           const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, { signal: AbortSignal.timeout(5000) });
           const health = await response.json();

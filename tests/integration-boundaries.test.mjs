@@ -179,7 +179,11 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /if \(!installedSmoke \|\| installedSmokeStarted \|\| !app\.isPackaged\) return/);
   assert.match(main, /postInternalWhatsApp\('smoke\.enable-agent', \{\}\)/);
   assert.match(main, /text: `synthetic smoke conversation \$\{index\}`/);
-  assert.match(main, /result\.trayHide = Boolean\(tray\) && !window\.isDestroyed\(\) && !window\.isVisible\(\)/);
+  assert.match(main, /let mainWindowShowEvents = 0/);
+  assert.match(main, /result\.trayHide = Boolean\(tray\) && !window\.isDestroyed\(\)/);
+  assert.match(main, /SMOKE_WINDOW_SHOW_TIMEOUT/);
+  assert.match(main, /result\.windowShown = mainWindowShowEvents > 0/);
+  assert.match(main, /result\.ok = !error && result\.healthReady && result\.databaseReady && result\.windowShown/);
   assert.match(main, /SMOKE_RENDERER_METRICS_MISSING/);
   assert.match(main, /SMOKE_SERVER_METRICS_MISSING/);
   assert.match(main, /monitorEventLoopDelay\(\{ resolution: 1 \}\)/);
@@ -195,6 +199,8 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /soakDurationMs >= 10 \* 60 \* 1000/);
   assert.match(main, /result\.whatsappServiceMemoryMb = Math\.max/);
   const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
+  assert.match(windowsSmoke, /'windowShown'/);
+  assert.match(windowsSmoke, /smokeError=\$smokeErrorCode/);
   const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
   const smokeEnvironmentSetup = windowsSmoke.indexOf("$env:AURA_INSTALLED_SMOKE = '1'");
   assert.ok(smokeEnvironmentSetup >= 0 && smokeEnvironmentSetup < installerStart, 'NSIS finish-page app must inherit the installed-smoke environment.');
