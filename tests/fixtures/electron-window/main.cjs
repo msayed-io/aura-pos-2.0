@@ -69,7 +69,16 @@ async function run() {
   });
   await window.loadURL(base);
   await readyToShowPromise;
+  const shownPromise = new Promise((resolve, reject) => {
+    const onShow = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      window.removeListener('show', onShow);
+      reject(new Error('window show event was not emitted'));
+    }, 10000);
+    window.once('show', onShow);
+  });
   window.show();
+  await shownPromise;
   const visibleBefore = window.isVisible();
   window.close();
   await new Promise(resolve => setTimeout(resolve, 100));
