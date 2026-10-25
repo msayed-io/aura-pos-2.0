@@ -406,14 +406,32 @@ try {
   }
   if ($forbidden) { throw "Forbidden package content detected: $($forbidden[0].Name)" }
   $files = Get-ChildItem -Path $scanRoots -File -Recurse -ErrorAction SilentlyContinue
+  # Google API key prefixes are case-sensitive; avoid case-insensitive matches in encoded data.
+  $googleApiKeyPattern = 'AIza[0-9A-Za-z_-]{30,}'
   foreach ($file in $files) {
+    if ($file.Name -cmatch '^query_compiler_bg\..+\.wasm-base64\.js$') {
+      $wrapperText = [System.IO.File]::ReadAllText($file.FullName)
+      $payloadMatch = [regex]::Match($wrapperText, 'const\s+wasm\s*=\s*"(?<payload>[A-Za-z0-9+/=]+)"')
+      if (!$payloadMatch.Success) { throw "Could not validate packaged Prisma WASM wrapper: $($file.Name)" }
+      $payload = $payloadMatch.Groups['payload'].Value
+      $wrapperWithoutPayload = $wrapperText.Remove($payloadMatch.Groups['payload'].Index, $payloadMatch.Groups['payload'].Length)
+      if ($wrapperWithoutPayload -cmatch $googleApiKeyPattern) { throw "Google API key value detected in packaged file: $($file.Name)" }
+      try { $decodedWasm = [Convert]::FromBase64String($payload) } catch { throw "Could not decode packaged Prisma WASM payload: $($file.Name)" }
+      $validWasmHeader = $decodedWasm.Length -ge 8 -and
+        $decodedWasm[0] -eq 0 -and $decodedWasm[1] -eq 0x61 -and $decodedWasm[2] -eq 0x73 -and $decodedWasm[3] -eq 0x6d -and
+        $decodedWasm[4] -eq 1 -and $decodedWasm[5] -eq 0 -and $decodedWasm[6] -eq 0 -and $decodedWasm[7] -eq 0
+      if (!$validWasmHeader) { throw "Invalid WebAssembly payload in packaged file: $($file.Name)" }
+      $decodedText = [Text.Encoding]::ASCII.GetString($decodedWasm)
+      if ($decodedText -cmatch $googleApiKeyPattern) { throw "Google API key value detected in decoded WASM file: $($file.Name)" }
+      continue
+    }
     $stream = [System.IO.File]::OpenRead($file.FullName)
     try {
       $buffer = [byte[]]::new(1048576)
       $carry = [byte[]]@()
       while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
         $text = [Text.Encoding]::ASCII.GetString($carry) + [Text.Encoding]::ASCII.GetString($buffer, 0, $read)
-        if ($text -match 'AIza[0-9A-Za-z_-]{30,}') { throw "Google API key value detected in packaged file: $($file.Name)" }
+        if ($text -cmatch $googleApiKeyPattern) { throw "Google API key value detected in packaged file: $($file.Name)" }
         $carryLength = [math]::Min(128, $read)
         $carry = [byte[]]::new($carryLength)
         if ($carryLength -gt 0) { [Array]::Copy($buffer, $read - $carryLength, $carry, 0, $carryLength) }
