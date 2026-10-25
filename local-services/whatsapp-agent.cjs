@@ -113,7 +113,9 @@ function validateGatewayUrl(raw) {
   }
   if (url.username || url.password || url.search || url.hash) throw new WhatsAppAgentError('GATEWAY_NOT_CONFIGURED');
   const localHost = ['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
-  if (url.protocol !== 'https:' && !(process.env.NODE_ENV !== 'production' && localHost && url.protocol === 'http:')) {
+  const allowLocalHttp = localHost && url.protocol === 'http:'
+    && (process.env.NODE_ENV !== 'production' || process.env.AURA_INSTALLED_SMOKE === '1');
+  if (url.protocol !== 'https:' && !allowLocalHttp) {
     throw new WhatsAppAgentError('GATEWAY_NOT_CONFIGURED');
   }
   return url.toString().replace(/\/$/, '');

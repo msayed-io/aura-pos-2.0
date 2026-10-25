@@ -28,7 +28,7 @@ const printCompleteSchema = z.object({
   errorCode: z.string().max(48).optional(),
 }).strict();
 const envelopeSchema = z.object({
-  action: z.enum(['message.process', 'message.recoverable', 'message.recover', 'reply.pending', 'reply.claim', 'reply.complete', 'reply.recover', 'print.pending', 'print.claim', 'print.complete', 'print.recover', 'conversation.list', 'conversation.cleanup']),
+  action: z.enum(['message.process', 'message.recoverable', 'message.recover', 'reply.pending', 'reply.claim', 'reply.complete', 'reply.recover', 'print.pending', 'print.claim', 'print.complete', 'print.recover', 'conversation.list', 'conversation.cleanup', 'smoke.enable-agent']),
   payload: z.unknown().optional(),
 }).strict();
 
@@ -157,6 +157,13 @@ export async function POST(request: NextRequest) {
       case 'conversation.cleanup':
         data = await localStore.dispatch('whatsapp.cleanup', { days: 30 });
         break;
+      case 'smoke.enable-agent': {
+        if (process.env.AURA_INSTALLED_SMOKE !== '1') throw new RequestError('SMOKE_ONLY', 404, 'هذه العملية متاحة داخل اختبار التثبيت فقط.');
+        const checked = z.object({}).strict().safeParse(payload ?? {});
+        if (!checked.success) throw new RequestError('INVALID_REQUEST', 400, 'صيغة عملية الاختبار غير صالحة.');
+        data = await localStore.dispatch('whatsapp.agent.settings.set', { enabled: true, consentVersion: '1' });
+        break;
+      }
     }
     return NextResponse.json({ ok: true, data }, { headers: responseHeaders });
   } catch (error) {

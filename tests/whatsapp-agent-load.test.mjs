@@ -44,7 +44,7 @@ test('20 concurrent conversations complete through local HTTP Gateway and real S
   const gatewayUrl = `http://127.0.0.1:${address.port}`;
   const { createGatewayClient } = require('../local-services/whatsapp-agent.cjs');
   const gatewayRequest = createGatewayClient({ gatewayUrl, installToken: token, timeoutMs: 5000 });
-  const histogram = monitorEventLoopDelay({ resolution: 10 });
+  const histogram = monitorEventLoopDelay({ resolution: 1 });
   histogram.enable();
   const started = performance.now();
   const results = await Promise.all(Array.from({ length: 20 }, (_, index) => processWhatsAppMessage(store, {
@@ -57,12 +57,14 @@ test('20 concurrent conversations complete through local HTTP Gateway and real S
   }, { gatewayRequest })));
   const elapsedMs = performance.now() - started;
   histogram.disable();
+  const eventLoopSamples = histogram.count;
   const p99EventLoopMs = histogram.percentile(99) / 1e6;
-  console.log(`[agent-load] conversations=20 elapsed_ms=${elapsedMs.toFixed(1)} event_loop_p99_ms=${p99EventLoopMs.toFixed(1)} platform=${process.platform}`);
+  console.log(`[agent-load] conversations=20 elapsed_ms=${elapsedMs.toFixed(1)} event_loop_samples=${eventLoopSamples} event_loop_p99_ms=${p99EventLoopMs.toFixed(1)} platform=${process.platform}`);
   assert.equal(results.length, 20);
   assert.ok(results.every(result => result.reply?.replyText === 'مرحباً، كيف أساعدك؟'));
   assert.equal(await store.prisma.localWhatsAppMessage.count(), 20);
   assert.equal((await store.dispatch('whatsapp.message.reply.pending')).length, 20);
   assert.equal(await store.prisma.localOrder.count(), 0);
+  assert.ok(eventLoopSamples >= 100, `event-loop p99 needs at least 100 samples; received ${eventLoopSamples}`);
   assert.ok(p99EventLoopMs < 100, `local Gateway/store event-loop p99 was ${p99EventLoopMs.toFixed(1)} ms`);
 });

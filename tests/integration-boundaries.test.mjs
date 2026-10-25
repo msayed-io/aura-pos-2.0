@@ -174,6 +174,74 @@ test('AI Gateway stays outside the EXE and only the internal route can process i
   }
 });
 
+test('installed Windows load smoke is opt-in, packaged-only, synthetic and local', () => {
+  const main = read('electron/main.cjs');
+  assert.match(main, /if \(!installedSmoke \|\| installedSmokeStarted \|\| !app\.isPackaged\) return/);
+  assert.match(main, /postInternalWhatsApp\('smoke\.enable-agent', \{\}\)/);
+  assert.match(main, /text: `synthetic smoke conversation \$\{index\}`/);
+  assert.match(main, /result\.trayHide = Boolean\(tray\) && !window\.isDestroyed\(\) && !window\.isVisible\(\)/);
+  assert.match(main, /SMOKE_RENDERER_METRICS_MISSING/);
+  assert.match(main, /SMOKE_SERVER_METRICS_MISSING/);
+  assert.match(main, /monitorEventLoopDelay\(\{ resolution: 1 \}\)/);
+  assert.match(main, /mainEventLoopSamples < 100/);
+  const route = read('src/app/api/internal/whatsapp/route.ts');
+  assert.match(route, /case 'smoke\.enable-agent':[\s\S]*?process\.env\.AURA_INSTALLED_SMOKE !== '1'/);
+  const agent = read('local-services/whatsapp-agent.cjs');
+  assert.match(agent, /process\.env\.AURA_INSTALLED_SMOKE === '1'/);
+  const health = read('src/app/api/health/route.ts');
+  assert.match(health, /eventLoopSamples: smokeEventLoop\.count/);
+  assert.match(main, /AURA_INSTALLED_SMOKE_READY/);
+  assert.match(main, /AURA_INSTALLED_SMOKE_STOP/);
+  assert.match(main, /soakDurationMs >= 10 \* 60 \* 1000/);
+  assert.match(main, /result\.whatsappServiceMemoryMb = Math\.max/);
+  const windowsSmoke = read('scripts/windows-installed-smoke.ps1');
+  assert.match(windowsSmoke, /AddMinutes\(10\)/);
+  assert.match(windowsSmoke, /privatePeakGrowthPercent -gt 10\.0/);
+  assert.match(windowsSmoke, /peakHandleGrowthPercent -gt 10\.0/);
+  assert.match(windowsSmoke, /if \(!\$processCountStable\)/);
+  assert.match(windowsSmoke, /if \(!\$processIdentityStable\)/);
+  assert.match(windowsSmoke, /ParentProcessId/);
+  assert.match(windowsSmoke, /CreationDate/);
+  assert.match(windowsSmoke, /KernelModeTime/);
+  assert.match(windowsSmoke, /PrivatePageCount/);
+  assert.match(windowsSmoke, /observedProcessIdentities\.Contains/);
+  assert.match(windowsSmoke, /lastFiveMinutesCoverageSeconds -lt 300/);
+  assert.match(windowsSmoke, /cpuIntervalWeightSeconds -lt 300/);
+  assert.match(windowsSmoke, /stableProcessIdentity = \$processIdentityStable/);
+  assert.match(windowsSmoke, /idleApplicationCpuPercent -gt 2\.0/);
+  assert.match(windowsSmoke, /LoadPercentage/);
+  assert.match(windowsSmoke, /idleSystemCpuTarget0To2PercentMet/);
+  assert.match(windowsSmoke, /systemCpuSamples\.Count -lt 100/);
+  assert.match(windowsSmoke, /p99BaselineComparisonAvailable = \$false/);
+  const supervisor = read('electron/service-supervisor.cjs');
+  assert.match(supervisor, /memoryLimitBytes = 256 \* 1024 \* 1024/);
+  const gateway = read('tests/fixtures/windows-smoke-gateway.mjs');
+  assert.match(gateway, /provider: async \(\) => \(\{ reply: 'تم استقبال رسالة الاختبار\.'/);
+  assert.doesNotMatch(gateway, /AIza|GEMINI_API_KEY/);
+});
+
+test('Windows release is master-only, versioned, run-owned and cleans only partial publication', () => {
+  const workflow = read('.github/workflows/aura-pos-windows-release.yml');
+  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /publish:[\s\S]*?if: github\.ref == 'refs\/heads\/master'/);
+  assert.match(workflow, /Calculate next semantic version after source tests/);
+  assert.match(workflow, /npm version \$version --no-git-tag-version --allow-same-version/);
+  assert.match(workflow, /Create draft, upload, verify and publish release transactionally/);
+  assert.match(workflow, /git tag -a \$tag \$sha -m \$tagMarker/);
+  assert.match(workflow, /Aura POS release run:\$env:GITHUB_RUN_ID/);
+  assert.match(workflow, /workflow-run:\$env:GITHUB_RUN_ID/);
+  assert.match(workflow, /gh release create \$tag[\s\S]*?--draft/);
+  assert.match(workflow, /--verify-tag/);
+  assert.match(workflow, /gh release edit \$tag[\s\S]*?--draft=false/);
+  assert.match(workflow, /published\.assets\.Count -ne 1/);
+  assert.match(workflow, /Remove incomplete release or tag after failure\/cancellation/);
+  assert.match(workflow, /failure\(\) \|\| cancelled\(\)/);
+  assert.match(workflow, /steps\.publish_release\.outcome != 'success'/);
+  assert.match(workflow, /Preserved the fully published, verified release/);
+  assert.match(workflow, /Refusing to delete tag \$tag without this run's ownership marker/);
+  assert.match(workflow, /--cleanup-tag --yes/);
+});
+
 test('startup and periodic recovery resumes only stale inbound messages through the local queue', () => {
   const main = read('electron/main.cjs');
   assert.match(main, /postInternalWhatsApp\('message\.recoverable'\)/);

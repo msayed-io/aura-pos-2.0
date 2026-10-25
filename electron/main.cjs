@@ -8,6 +8,7 @@ const {
 const { createServer } = require('node:net');
 const { request } = require('node:http');
 const { randomBytes, createHmac } = require('node:crypto');
+const { monitorEventLoopDelay } = require('node:perf_hooks');
 const fs = require('node:fs');
 const path = require('node:path');
 const { UtilityServiceSupervisor } = require('./service-supervisor.cjs');
@@ -63,6 +64,9 @@ const whatsappRuntimePackagePath = app.isPackaged
   : path.join(__dirname, 'whatsapp-runtime', 'package.json');
 const serviceEntry = path.join(__dirname, 'whatsapp-service.cjs');
 const trayIconPath = path.join(__dirname, 'aura-icon.ico');
+const installedSmoke = process.env.AURA_INSTALLED_SMOKE === '1' && app.isPackaged;
+const installedSmokeReport = process.env.AURA_INSTALLED_SMOKE_REPORT;
+let installedSmokeStarted = false;
 
 function report(code, error) {
   const errorCode = error && typeof error === 'object' ? error.code || error.name : undefined;
@@ -512,6 +516,7 @@ async function processIncomingWhatsAppMessage(message, resumeExisting = false) {
   if (result?.order?.id) showNewOrderNotification(result.order.displayId);
   if (result?.order?.id) await processPendingPrintJobs();
   await flushPendingReplies();
+  return result;
 }
 
 function queueWhatsAppMessage(message, conversationHash, resumeExisting = false) {
@@ -719,6 +724,210 @@ function createTray() {
   tray.on('click', () => { void showMainWindow().catch(error => report('TRAY_OPEN_FAILED', error)); });
   updateTrayMenu();
 }
+async function runInstalledSmoke() {
+  if (!installedSmoke || installedSmokeStarted || !app.isPackaged) return;
+  installedSmokeStarted = true;
+  const reportPath = typeof installedSmokeReport === 'string' && path.isAbsolute(installedSmokeReport) ? installedSmokeReport : null;
+  const readyPath = typeof process.env.AURA_INSTALLED_SMOKE_READY === 'string' && path.isAbsolute(process.env.AURA_INSTALLED_SMOKE_READY)
+    ? process.env.AURA_INSTALLED_SMOKE_READY : null;
+  const stopPath = typeof process.env.AURA_INSTALLED_SMOKE_STOP === 'string' && path.isAbsolute(process.env.AURA_INSTALLED_SMOKE_STOP)
+    ? process.env.AURA_INSTALLED_SMOKE_STOP : null;
+  const result = {
+    schema: 2,
+    healthReady: false,
+    databaseReady: false,
+    trayHide: false,
+    serverContinued: false,
+    whatsappRuntimeLoaded: false,
+    qrObserved: false,
+    serviceContinued: false,
+    loadConversations: 0,
+    loadReplies: 0,
+    loadOrders: 0,
+    mainEventLoopSamples: 0,
+    serverEventLoopSamples: 0,
+    rendererEventLoopSamples: 0,
+    mainEventLoopP99Ms: null,
+    serverEventLoopP99Ms: null,
+    rendererEventLoopP99Ms: null,
+    whatsappServiceMemoryMb: null,
+    performanceWithinTarget: false,
+    soakCompleted: false,
+    soakDurationMs: 0,
+  };
+  let finished = false;
+  let qrTimer;
+  let timeout;
+  const finish = async error => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(qrTimer);
+    result.ok = !error && result.healthReady && result.databaseReady && result.trayHide && result.serverContinued
+      && result.whatsappRuntimeLoaded && result.qrObserved && result.serviceContinued
+      && result.loadConversations === 20 && result.loadReplies === 20 && result.loadOrders === 0
+      && result.performanceWithinTarget && result.soakCompleted
+      && Number.isFinite(result.whatsappServiceMemoryMb) && result.whatsappServiceMemoryMb < 150;
+    if (error) result.errorCode = String(error?.code || error?.message || 'SMOKE_FAILED').replace(/[^A-Z0-9_]/gi, '').slice(0, 48);
+    try {
+      if (!reportPath) throw new Error('SMOKE_REPORT_PATH_REQUIRED');
+      fs.mkdirSync(path.dirname(reportPath), { recursive: true });
+      fs.writeFileSync(reportPath, JSON.stringify(result), { encoding: 'utf8', flag: 'wx' });
+    } catch (writeError) { report('INSTALLED_SMOKE_REPORT_FAILED', writeError); }
+    clearTimeout(timeout);
+    setTimeout(() => app.quit(), 250);
+  };
+  timeout = setTimeout(() => { void finish(new Error('SMOKE_TIMEOUT')); }, 16 * 60 * 1000);
+  try {
+    if (!reportPath || !readyPath || !stopPath) throw new Error('SMOKE_REPORT_PATH_REQUIRED');
+    await ensureLocalServer();
+    result.healthReady = true;
+    result.databaseReady = fs.existsSync(path.join(dataDir, 'aura.sqlite'));
+    if (!result.databaseReady) throw new Error('SMOKE_DATABASE_MISSING');
+    const window = mainWindow;
+    if (!window || window.isDestroyed() || !window.isVisible()) throw new Error('SMOKE_WINDOW_NOT_VISIBLE');
+    const smokeSettings = await postInternalWhatsApp('smoke.enable-agent', {});
+    if (smokeSettings?.enabled !== true) throw new Error('SMOKE_AGENT_NOT_ENABLED');
+    const rendererStarted = await window.webContents.executeJavaScript(`(() => {
+      const previous = window.__auraInstalledSmokeProbe;
+      if (previous?.timer) clearInterval(previous.timer);
+      const probe = { last: performance.now(), delays: [], timer: null };
+      probe.timer = setInterval(() => {
+        const now = performance.now();
+        probe.delays.push(Math.max(0, now - probe.last - 5));
+        probe.last = now;
+        if (probe.delays.length > 10000) probe.delays.shift();
+      }, 5);
+      window.__auraInstalledSmokeProbe = probe;
+      return true;
+    })()`);
+    if (rendererStarted !== true) throw new Error('SMOKE_RENDERER_PROBE_FAILED');
+    const resetResponse = await fetch(`http://127.0.0.1:${serverPort}/api/health?resetEventLoop=1`, { signal: AbortSignal.timeout(5000) });
+    if (!resetResponse.ok) throw new Error('SMOKE_METRICS_RESET_FAILED');
+    const eventLoop = monitorEventLoopDelay({ resolution: 1 });
+    eventLoop.enable();
+    let loadResults;
+    try {
+      loadResults = await Promise.all(Array.from({ length: 20 }, (_, index) => {
+        const phone = `2015550${String(index).padStart(6, '0')}`;
+        return processIncomingWhatsAppMessage({
+          jid: `${phone}@s.whatsapp.net`,
+          messageId: `installed-smoke-${index}`,
+          text: `synthetic smoke conversation ${index}`,
+        });
+      }));
+      await new Promise(resolve => setTimeout(resolve, 25));
+    } finally {
+      eventLoop.disable();
+    }
+    result.loadConversations = 20;
+    result.loadReplies = loadResults.filter(item => item?.reply && !item?.gatewayFailed).length;
+    result.loadOrders = loadResults.filter(item => item?.order?.id).length;
+    result.mainEventLoopSamples = eventLoop.count;
+    if (result.mainEventLoopSamples < 100) throw new Error('SMOKE_MAIN_METRICS_MISSING');
+    result.mainEventLoopP99Ms = Number((eventLoop.percentile(99) / 1e6).toFixed(1));
+    const loadHealthResponse = await fetch(`http://127.0.0.1:${serverPort}/api/health`, { signal: AbortSignal.timeout(5000) });
+    const loadHealth = await loadHealthResponse.json();
+    if (typeof loadHealth.eventLoopP99Ms !== 'number' || !Number.isFinite(loadHealth.eventLoopP99Ms)) throw new Error('SMOKE_SERVER_METRICS_MISSING');
+    result.serverEventLoopSamples = Number(loadHealth.eventLoopSamples);
+    if (!Number.isInteger(result.serverEventLoopSamples) || result.serverEventLoopSamples < 100) throw new Error('SMOKE_SERVER_METRICS_MISSING');
+    result.serverEventLoopP99Ms = loadHealth.eventLoopP99Ms;
+    const rendererMetrics = await window.webContents.executeJavaScript(`(() => {
+      const probe = window.__auraInstalledSmokeProbe;
+      if (!probe) return null;
+      clearInterval(probe.timer);
+      const sorted = probe.delays.slice().sort((a, b) => a - b);
+      const p99 = sorted.length ? sorted[Math.max(0, Math.ceil(sorted.length * 0.99) - 1)] : null;
+      return { samples: sorted.length, p99Ms: p99 === null ? null : Number(p99.toFixed(1)) };
+    })()`);
+    if (!rendererMetrics || rendererMetrics.samples < 1 || !Number.isFinite(rendererMetrics.p99Ms)) {
+      throw new Error('SMOKE_RENDERER_METRICS_MISSING');
+    }
+    result.rendererEventLoopSamples = rendererMetrics.samples;
+    if (result.rendererEventLoopSamples < 20) throw new Error('SMOKE_RENDERER_METRICS_MISSING');
+    result.rendererEventLoopP99Ms = rendererMetrics.p99Ms;
+    result.performanceWithinTarget = result.loadReplies === 20 && result.loadOrders === 0
+      && [result.mainEventLoopP99Ms, result.serverEventLoopP99Ms, result.rendererEventLoopP99Ms]
+        .every(value => Number.isFinite(value) && value <= 100);
+    if (!result.performanceWithinTarget) throw new Error('SMOKE_LOAD_OR_EVENT_LOOP_LIMIT');
+
+    const hidden = new Promise((resolve, reject) => {
+      const hideTimer = setTimeout(() => reject(new Error('SMOKE_WINDOW_HIDE_TIMEOUT')), 15000);
+      window.once('hide', async () => {
+        clearTimeout(hideTimer);
+        result.trayHide = Boolean(tray) && !window.isDestroyed() && !window.isVisible();
+        try {
+          const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, { signal: AbortSignal.timeout(5000) });
+          const health = await response.json();
+          result.serverContinued = response.status === 200 && health.status === 'ok' && health.database === 'ready';
+          if (!result.serverContinued) throw new Error('SMOKE_SERVER_NOT_READY_AFTER_HIDE');
+          resolve();
+        } catch (error) { reject(error); }
+      });
+    });
+    if (!serviceSupervisor) throw new Error('SMOKE_WHATSAPP_SUPERVISOR_MISSING');
+    if (!serviceSupervisor.readyAt) {
+      await new Promise((resolve, reject) => {
+        const readyTimer = setTimeout(() => reject(new Error('SMOKE_SERVICE_READY_TIMEOUT')), 20000);
+        serviceSupervisor.once('ready', () => { clearTimeout(readyTimer); resolve(); });
+      });
+    }
+    const gotQr = new Promise(resolve => serviceSupervisor.once('qr', qr => {
+      result.qrObserved = typeof qr === 'string' && qr.length > 0;
+      result.whatsappRuntimeLoaded = result.qrObserved;
+      resolve(result.qrObserved);
+    }));
+    if (!fs.existsSync(whatsappRuntimePackagePath) || !serviceSupervisor?.command('start')) throw new Error('SMOKE_WHATSAPP_START_FAILED');
+    qrTimer = setTimeout(() => { void finish(new Error('SMOKE_QR_TIMEOUT')); }, 90000);
+    window.close();
+    const [, qrLoaded] = await Promise.all([hidden, gotQr]);
+    if (!qrLoaded) throw new Error('SMOKE_QR_INVALID');
+    clearTimeout(qrTimer);
+    qrTimer = null;
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    const serviceSnapshot = serviceSupervisor.snapshot();
+    result.serviceContinued = serviceSnapshot.state === 'qr' && Number.isInteger(serviceSnapshot.pid)
+      && app.getAppMetrics().some(metric => metric.pid === serviceSnapshot.pid);
+    const serviceMetric = app.getAppMetrics().find(metric => metric.pid === serviceSnapshot.pid);
+    const serviceMemoryKb = serviceMetric?.memory?.privateBytes ?? serviceMetric?.memory?.workingSetSize;
+    result.whatsappServiceMemoryMb = Number.isFinite(serviceMemoryKb) ? Number((serviceMemoryKb / 1024).toFixed(1)) : null;
+    if (!result.serviceContinued) throw new Error('SMOKE_SERVICE_NOT_CONTINUED_AFTER_HIDE');
+    if (!Number.isFinite(result.whatsappServiceMemoryMb)) throw new Error('SMOKE_SERVICE_MEMORY_UNAVAILABLE');
+    if (result.whatsappServiceMemoryMb >= 150) throw new Error('SMOKE_SERVICE_MEMORY_LIMIT');
+
+    const soakStartedAt = Date.now();
+    fs.mkdirSync(path.dirname(readyPath), { recursive: true });
+    fs.writeFileSync(readyPath, JSON.stringify({ ...result, ready: true, soakStartedAt: new Date(soakStartedAt).toISOString() }), { encoding: 'utf8', flag: 'wx' });
+    let lastHealthCheckAt = soakStartedAt;
+    while (!fs.existsSync(stopPath)) {
+      if (Date.now() - soakStartedAt > 11 * 60 * 1000) throw new Error('SMOKE_SOAK_TIMEOUT');
+      const current = serviceSupervisor.snapshot();
+      if (current.state !== 'qr' || !Number.isInteger(current.pid)
+        || !app.getAppMetrics().some(metric => metric.pid === current.pid)
+        || !tray || tray.isDestroyed?.()) throw new Error('SMOKE_SOAK_SERVICE_OR_TRAY_LOST');
+      const currentServiceMetric = app.getAppMetrics().find(metric => metric.pid === current.pid);
+      const currentServiceMemoryKb = currentServiceMetric?.memory?.privateBytes ?? currentServiceMetric?.memory?.workingSetSize;
+      const currentServiceMemoryMb = Number.isFinite(currentServiceMemoryKb) ? currentServiceMemoryKb / 1024 : null;
+      if (!Number.isFinite(currentServiceMemoryMb)) throw new Error('SMOKE_SERVICE_MEMORY_UNAVAILABLE');
+      result.whatsappServiceMemoryMb = Math.max(result.whatsappServiceMemoryMb, Number(currentServiceMemoryMb.toFixed(1)));
+      if (result.whatsappServiceMemoryMb >= 150) throw new Error('SMOKE_SERVICE_MEMORY_LIMIT');
+      if (Date.now() - lastHealthCheckAt >= 30000) {
+        const response = await fetch(`http://127.0.0.1:${serverPort}/api/health`, { signal: AbortSignal.timeout(5000) });
+        const health = await response.json();
+        if (response.status !== 200 || health.status !== 'ok' || health.database !== 'ready') throw new Error('SMOKE_SOAK_HEALTH_FAILED');
+        lastHealthCheckAt = Date.now();
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    result.soakDurationMs = Date.now() - soakStartedAt;
+    result.soakCompleted = result.soakDurationMs >= 10 * 60 * 1000;
+    if (!result.soakCompleted) throw new Error('SMOKE_SOAK_TOO_SHORT');
+    const finalServiceSnapshot = serviceSupervisor.snapshot();
+    result.serviceContinued = finalServiceSnapshot.state === 'qr' && Number.isInteger(finalServiceSnapshot.pid)
+      && app.getAppMetrics().some(metric => metric.pid === finalServiceSnapshot.pid);
+    if (!result.serviceContinued) throw new Error('SMOKE_SERVICE_NOT_CONTINUED_AFTER_SOAK');
+    await finish(null);
+  } catch (error) { await finish(error); }
+}
 
 async function shutdownAll() {
   if (serviceSupervisor) {
@@ -778,6 +987,7 @@ if (hasSingleInstanceLock) {
     });
     powerMonitor.on('shutdown', () => { appIsQuitting = true; app.quit(); });
     await createWindow();
+    if (installedSmoke) void runInstalledSmoke();
     await recoverAgentOperations();
     await cleanupOldWhatsAppConversations();
     conversationCleanupTimer = setInterval(() => { void cleanupOldWhatsAppConversations(); }, 24 * 60 * 60 * 1000);

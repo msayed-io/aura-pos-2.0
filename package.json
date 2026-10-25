@@ -1,6 +1,6 @@
 {
   "name": "nextjs_tailwind_shadcn_ts",
-  "version": "0.2.0",
+  "version": "0.2.6",
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
@@ -14,7 +14,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:reset": "prisma migrate reset",
-    "test": "npm run prepare:whatsapp-runtime && node --test tests/*.test.mjs mini-services/ai-gateway/test/*.test.mjs",
+    "test": "npm run prepare:whatsapp-runtime && node --test --test-concurrency=1 tests/*.test.mjs mini-services/ai-gateway/test/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "test:standalone": "node scripts/test-standalone-storage.mjs",
     "test:electron-window": "node --test tests/electron-window-smoke.test.mjs",
@@ -121,11 +121,14 @@
     },
     "files": [
       "electron/**/*",
+      "!electron/whatsapp-runtime/**/*",
       ".next/standalone/**/*",
       ".next/static/**/*",
       "public/**/*",
       "package.json",
-      "!node_modules/**/*"
+      "!node_modules/**/*",
+      "!**/.env",
+      "!**/.env.*"
     ],
     "extraResources": [
       {
@@ -155,7 +158,7 @@
           ]
         }
       ],
-      "artifactName": "Aura_POS_v${version}.exe",
+      "artifactName": "Aura_POS_2.0_v${version}.exe",
       "icon": "public/aura-icon.png"
     },
     "nsis": {
