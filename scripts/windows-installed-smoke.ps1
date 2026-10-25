@@ -213,6 +213,7 @@ try {
     $systemCpuPercent = if ($systemCpuValues.Count -gt 0) { [math]::Round((($systemCpuValues | Measure-Object -Average).Average), 2) } else { $null }
     $resourceSamples += [pscustomobject]@{
       timestampUtc = $now.ToUniversalTime().ToString('o')
+      cpuIntervalStartUtc = $lastSampleAt.ToUniversalTime().ToString('o')
       applicationCpuPercent = [math]::Round($cpuPercent, 2)
       cpuIntervalSeconds = [math]::Round($elapsed, 3)
       systemCpuPercent = $systemCpuPercent
@@ -233,14 +234,31 @@ try {
 
   $initialWindow = @($resourceSamples | Select-Object -First 30)
   $finalWindow = @($resourceSamples | Select-Object -Last 30)
-  $lastFiveMinutesSince = (Get-Date).ToUniversalTime().AddMinutes(-5).AddSeconds(-2)
-  $lastFiveMinutes = @($resourceSamples | Where-Object { [DateTimeOffset]::Parse($_.timestampUtc).UtcDateTime -ge $lastFiveMinutesSince })
+  $fiveMinuteWindowEnd = [DateTimeOffset]::Parse($resourceSamples[-1].timestampUtc).UtcDateTime
+  $fiveMinuteWindowStart = $fiveMinuteWindowEnd.AddMinutes(-5)
+  $lastFiveMinutes = @($resourceSamples | Where-Object {
+    [DateTimeOffset]::Parse($_.timestampUtc).UtcDateTime -gt $fiveMinuteWindowStart -and
+    [DateTimeOffset]::Parse($_.cpuIntervalStartUtc).UtcDateTime -lt $fiveMinuteWindowEnd
+  })
   if ($lastFiveMinutes.Count -lt 120) { throw "Insufficient samples for an actual five-minute idle CPU average: $($lastFiveMinutes.Count)." }
   $lastFiveMinuteTimes = @($lastFiveMinutes | ForEach-Object { [DateTimeOffset]::Parse($_.timestampUtc).UtcDateTime })
-  $lastFiveMinutesCoverageSeconds = ($lastFiveMinuteTimes[-1] - $lastFiveMinuteTimes[0]).TotalSeconds
-  if ($lastFiveMinutesCoverageSeconds -lt 300) { throw "Last-five-minute sample coverage was only $([math]::Round($lastFiveMinutesCoverageSeconds, 1)) seconds." }
-  $cpuIntervalWeightSeconds = [double](($lastFiveMinutes | Measure-Object -Property cpuIntervalSeconds -Sum).Sum)
-  if ($cpuIntervalWeightSeconds -lt 300) { throw "Application CPU intervals covered only $([math]::Round($cpuIntervalWeightSeconds, 1)) seconds." }
+  $lastFiveMinutesSampleSpanSeconds = ($lastFiveMinuteTimes[-1] - $lastFiveMinuteTimes[0]).TotalSeconds
+  $cpuIntervalCoverageTicks = [long]0
+  $weightedApplicationCpu = 0.0
+  foreach ($sample in $lastFiveMinutes) {
+    $intervalStart = [DateTimeOffset]::Parse($sample.cpuIntervalStartUtc).UtcDateTime
+    $intervalEnd = [DateTimeOffset]::Parse($sample.timestampUtc).UtcDateTime
+    $overlapStart = if ($intervalStart -gt $fiveMinuteWindowStart) { $intervalStart } else { $fiveMinuteWindowStart }
+    $overlapEnd = if ($intervalEnd -lt $fiveMinuteWindowEnd) { $intervalEnd } else { $fiveMinuteWindowEnd }
+    $overlapTicks = [long][math]::Max([long]0, ($overlapEnd - $overlapStart).Ticks)
+    if ($overlapTicks -le 0) { continue }
+    $cpuIntervalCoverageTicks += $overlapTicks
+    $overlapSeconds = [double]$overlapTicks / [TimeSpan]::TicksPerSecond
+    $weightedApplicationCpu += [double]$sample.applicationCpuPercent * $overlapSeconds
+  }
+  $cpuIntervalWeightSeconds = [double]$cpuIntervalCoverageTicks / [TimeSpan]::TicksPerSecond
+  $lastFiveMinutesCoverageSeconds = $cpuIntervalWeightSeconds
+  if ($cpuIntervalCoverageTicks -lt (300 * [TimeSpan]::TicksPerSecond)) { throw "Application CPU intervals covered only $([math]::Round($cpuIntervalWeightSeconds, 1)) seconds." }
   $initialPrivateMB = [double](($initialWindow | Measure-Object -Property privateMemoryMB -Average).Average)
   $peakPrivateMB = [double](($resourceSamples | Measure-Object -Property privateMemoryMB -Maximum).Maximum)
   $finalPrivateMB = [double](($finalWindow | Measure-Object -Property privateMemoryMB -Average).Average)
@@ -255,7 +273,6 @@ try {
   $processCountStable = $processCounts.Count -eq 1
   $processIdentitySets = @($resourceSamples | ForEach-Object { (@($_.processIdentities | Sort-Object) -join ',') } | Sort-Object -Unique)
   $processIdentityStable = $processIdentitySets.Count -eq 1
-  $weightedApplicationCpu = ($lastFiveMinutes | ForEach-Object { [double]$_.applicationCpuPercent * [double]$_.cpuIntervalSeconds } | Measure-Object -Sum).Sum
   $idleApplicationCpuPercent = [math]::Round(($weightedApplicationCpu / $cpuIntervalWeightSeconds), 2)
   $systemCpuSamples = @($lastFiveMinutes | Where-Object { $null -ne $_.systemCpuPercent })
   if ($systemCpuSamples.Count -lt 100) { throw "Insufficient total-system CPU samples in the last five minutes: $($systemCpuSamples.Count)." }
@@ -266,6 +283,7 @@ try {
     soakDurationSeconds = $soakDurationSeconds
     samples = $resourceSamples.Count
     lastFiveMinutesCoverageSeconds = [math]::Round($lastFiveMinutesCoverageSeconds, 1)
+    lastFiveMinutesSampleSpanSeconds = [math]::Round($lastFiveMinutesSampleSpanSeconds, 1)
     lastFiveMinutesCpuIntervalSeconds = [math]::Round($cpuIntervalWeightSeconds, 1)
     idleApplicationCpuAveragePercentLast5Min = $idleApplicationCpuPercent
     idleSystemCpuAveragePercentLast5Min = $idleSystemCpuPercent
@@ -304,6 +322,7 @@ try {
 - Soak: $soakDurationSeconds seconds / $($resourceSamples.Count) samples
 - Load p99 Main/server/renderer: $($ready.mainEventLoopP99Ms)/$($ready.serverEventLoopP99Ms)/$($ready.rendererEventLoopP99Ms) ms
 - Idle application CPU, last five minutes: $idleApplicationCpuPercent%; total system CPU: $idleSystemCpuPercent% (0–2% target met: $systemCpuTargetMet)
+- CPU interval coverage / endpoint sample span in last five minutes: $lastFiveMinutesCoverageSeconds/$([math]::Round($lastFiveMinutesSampleSpanSeconds,1)) seconds; minimum interval coverage is 300 seconds.
 - p99 baseline comparison unavailable: no prior Windows baseline with the same 20-conversation workload; absolute 100ms target is enforced.
 - Private memory: start average $([math]::Round($initialPrivateMB,1)) MB; peak $([math]::Round($peakPrivateMB,1)) MB; peak growth $privatePeakGrowthPercent%
 - Handles: start average $([math]::Round($initialHandles,0)); peak $([math]::Round($peakHandles,0)); peak growth $peakHandleGrowthPercent%

@@ -269,9 +269,14 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /KernelModeTime/);
   assert.match(windowsSmoke, /PrivatePageCount/);
   assert.match(windowsSmoke, /\$nextSampleAt = \$now\.AddSeconds\(2\)/);
+  assert.match(windowsSmoke, /cpuIntervalStartUtc = \$lastSampleAt\.ToUniversalTime\(\)\.ToString\('o'\)/);
   assert.match(windowsSmoke, /observedProcessIdentities\.Contains/);
-  assert.match(windowsSmoke, /lastFiveMinutesCoverageSeconds -lt 300/);
-  assert.match(windowsSmoke, /cpuIntervalWeightSeconds -lt 300/);
+  assert.match(windowsSmoke, /fiveMinuteWindowEnd = \[DateTimeOffset\]::Parse\(\$resourceSamples\[-1\]\.timestampUtc\)\.UtcDateTime/);
+  assert.match(windowsSmoke, /lastFiveMinutes\.Count -lt 120/);
+  assert.match(windowsSmoke, /cpuIntervalCoverageTicks -lt \(300 \* \[TimeSpan\]::TicksPerSecond\)/);
+  assert.match(windowsSmoke, /weightedApplicationCpu \+= \[double\]\$sample\.applicationCpuPercent \* \$overlapSeconds/);
+  assert.match(windowsSmoke, /lastFiveMinutesSampleSpanSeconds = \[math\]::Round\(\$lastFiveMinutesSampleSpanSeconds, 1\)/);
+  assert.doesNotMatch(windowsSmoke, /lastFiveMinutesCoverageSeconds -lt 300/);
   assert.match(windowsSmoke, /stableProcessIdentity = \$processIdentityStable/);
   assert.match(windowsSmoke, /idleApplicationCpuPercent -gt 2\.0/);
   assert.match(windowsSmoke, /LoadPercentage/);
