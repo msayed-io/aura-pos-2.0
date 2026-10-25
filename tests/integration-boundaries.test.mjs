@@ -362,7 +362,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
 });
 
 test('Windows release is master-only, versioned, run-owned and cleans only partial publication', () => {
-  const workflow = read('.github/workflows/aura-pos-windows-release.yml');
+  const workflow = read('.github/workflows/aura-pos-windows-release.yml').replace(/\r\n/g, '\n');
   assert.match(workflow, /Upload Windows resource sample[\s\S]*?if: always\(\)[\s\S]*?name: windows-installed-resource-sample-\$\{\{ github\.run_id \}\}[\s\S]*?path: windows-installed-resource-sample\.json[\s\S]*?if-no-files-found: warn/);
   assert.match(workflow, /cancel-in-progress: false/);
   assert.match(workflow, /publish:[\s\S]*?if: github\.ref == 'refs\/heads\/master'/);
