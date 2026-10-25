@@ -738,6 +738,8 @@ async function runInstalledSmoke() {
     ? process.env.AURA_INSTALLED_SMOKE_READY : null;
   const stopPath = typeof process.env.AURA_INSTALLED_SMOKE_STOP === 'string' && path.isAbsolute(process.env.AURA_INSTALLED_SMOKE_STOP)
     ? process.env.AURA_INSTALLED_SMOKE_STOP : null;
+  // An unlinked QR session may enter the designed reconnect backoff after the remote socket closes.
+  const smokeLiveWhatsAppStates = new Set(['qr', 'connecting', 'reconnecting', 'connected']);
   const result = {
     schema: 2,
     healthReady: false,
@@ -747,6 +749,8 @@ async function runInstalledSmoke() {
     whatsappRuntimeLoaded: false,
     qrObserved: false,
     serviceContinued: false,
+    whatsappServiceStateAtSoakStart: null,
+    whatsappServiceStateAtSoakEnd: null,
     loadConversations: 0,
     loadReplies: 0,
     loadOrders: 0,
@@ -930,7 +934,8 @@ async function runInstalledSmoke() {
     qrTimer = null;
     await new Promise(resolve => setTimeout(resolve, 5000));
     const serviceSnapshot = serviceSupervisor.snapshot();
-    result.serviceContinued = serviceSnapshot.state === 'qr' && Number.isInteger(serviceSnapshot.pid)
+    result.whatsappServiceStateAtSoakStart = serviceSnapshot.state;
+    result.serviceContinued = smokeLiveWhatsAppStates.has(serviceSnapshot.state) && Number.isInteger(serviceSnapshot.pid)
       && app.getAppMetrics().some(metric => metric.pid === serviceSnapshot.pid);
     const serviceMetric = app.getAppMetrics().find(metric => metric.pid === serviceSnapshot.pid);
     const serviceMemoryKb = serviceMetric?.memory?.privateBytes ?? serviceMetric?.memory?.workingSetSize;
@@ -947,7 +952,7 @@ async function runInstalledSmoke() {
       result.soakDurationMs = Date.now() - soakStartedAt;
       if (Date.now() - soakStartedAt > 11 * 60 * 1000) throw new Error('SMOKE_SOAK_TIMEOUT');
       const current = serviceSupervisor.snapshot();
-      if (current.state !== 'qr' || !Number.isInteger(current.pid)
+      if (!smokeLiveWhatsAppStates.has(current.state) || !Number.isInteger(current.pid)
         || !app.getAppMetrics().some(metric => metric.pid === current.pid)
         || !tray || tray.isDestroyed?.()) throw new Error('SMOKE_SOAK_SERVICE_OR_TRAY_LOST');
       const currentServiceMetric = app.getAppMetrics().find(metric => metric.pid === current.pid);
@@ -968,7 +973,8 @@ async function runInstalledSmoke() {
     result.soakCompleted = result.soakDurationMs >= 10 * 60 * 1000;
     if (!result.soakCompleted) throw new Error('SMOKE_SOAK_TOO_SHORT');
     const finalServiceSnapshot = serviceSupervisor.snapshot();
-    result.serviceContinued = finalServiceSnapshot.state === 'qr' && Number.isInteger(finalServiceSnapshot.pid)
+    result.whatsappServiceStateAtSoakEnd = finalServiceSnapshot.state;
+    result.serviceContinued = smokeLiveWhatsAppStates.has(finalServiceSnapshot.state) && Number.isInteger(finalServiceSnapshot.pid)
       && app.getAppMetrics().some(metric => metric.pid === finalServiceSnapshot.pid);
     if (!result.serviceContinued) throw new Error('SMOKE_SERVICE_NOT_CONTINUED_AFTER_SOAK');
     await finish(null);

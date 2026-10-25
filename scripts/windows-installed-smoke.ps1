@@ -120,6 +120,7 @@ try {
       $smokeErrorCode = 'unavailable'
       $serviceErrorCode = 'none'
       $serviceState = 'unknown'
+      $serviceStateAtSoakStart = 'unknown'
       $serviceRestartCount = 'unknown'
       $servicePid = 'unknown'
       $supervisorEvents = 'none'
@@ -130,6 +131,7 @@ try {
           if ($earlyReport.errorCode -match '^[A-Z0-9_]{1,48}$') { $smokeErrorCode = $earlyReport.errorCode }
           if ($earlyReport.serviceErrorCode -match '^[A-Z0-9_]{1,48}$') { $serviceErrorCode = $earlyReport.serviceErrorCode }
           if ($earlyReport.serviceStateAtExit -match '^[a-z-]{1,24}$') { $serviceState = $earlyReport.serviceStateAtExit }
+          if ($earlyReport.whatsappServiceStateAtSoakStart -match '^[a-z-]{1,24}$') { $serviceStateAtSoakStart = $earlyReport.whatsappServiceStateAtSoakStart }
           if ($null -ne $earlyReport.serviceRestartCount -and "$($earlyReport.serviceRestartCount)" -match '^\d{1,4}$') { $serviceRestartCount = $earlyReport.serviceRestartCount }
           if ($null -ne $earlyReport.servicePidAtExit -and "$($earlyReport.servicePidAtExit)" -match '^\d{1,10}$') { $servicePid = $earlyReport.servicePidAtExit }
           $eventCodes = @($earlyReport.serviceSupervisorLogCodes | Where-Object { $_ -match '^SERVICE_[A-Z0-9_]{1,48}$' })
@@ -143,7 +145,7 @@ try {
           $performanceSummary = $metricValues -join ','
         } catch { $smokeErrorCode = 'unreadable' }
       }
-      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceRestarts=$serviceRestartCount; servicePid=$servicePid; supervisorEvents=$supervisorEvents; performance=$performanceSummary)."
+      throw "Installed application exited before soak readiness ($($app.ExitCode); smokeError=$smokeErrorCode; serviceError=$serviceErrorCode; serviceState=$serviceState; serviceStateAtSoakStart=$serviceStateAtSoakStart; serviceRestarts=$serviceRestartCount; servicePid=$servicePid; supervisorEvents=$supervisorEvents; performance=$performanceSummary)."
     }
     Start-Sleep -Milliseconds 500
   }
@@ -183,6 +185,7 @@ try {
           $exitErrorCode = if ($exitReport.errorCode -match '^[A-Z0-9_]{1,48}$') { $exitReport.errorCode } else { 'unknown' }
           $exitServiceError = if ($exitReport.serviceErrorCode -match '^[A-Z0-9_]{1,48}$') { $exitReport.serviceErrorCode } else { 'none' }
           $exitServiceState = if ($exitReport.serviceStateAtExit -match '^[a-z-]{1,24}$') { $exitReport.serviceStateAtExit } else { 'unknown' }
+          $exitSoakStartState = if ($exitReport.whatsappServiceStateAtSoakStart -match '^[a-z-]{1,24}$') { $exitReport.whatsappServiceStateAtSoakStart } else { 'unknown' }
           $exitRestarts = if ($null -ne $exitReport.serviceRestartCount -and "$($exitReport.serviceRestartCount)" -match '^\d{1,4}$') { $exitReport.serviceRestartCount } else { 'unknown' }
           $exitServicePid = if ($null -ne $exitReport.servicePidAtExit -and "$($exitReport.servicePidAtExit)" -match '^\d{1,10}$') { $exitReport.servicePidAtExit } else { 'unknown' }
           $exitSoakMs = if ($null -ne $exitReport.soakDurationMs -and "$($exitReport.soakDurationMs)" -match '^\d{1,12}$') { $exitReport.soakDurationMs } else { 'unknown' }
@@ -194,7 +197,7 @@ try {
             if ($null -eq $metricValue -or "$metricValue" -notmatch '^\d+(?:\.\d{1,2})?$') { $metricValue = 'unknown' }
             $exitMetrics += "$metricName=$metricValue"
           }
-          $exitSummary = "smokeError=$exitErrorCode; serviceError=$exitServiceError; serviceState=$exitServiceState; serviceRestarts=$exitRestarts; servicePid=$exitServicePid; soakDurationMs=$exitSoakMs; supervisorEvents=$exitEvents; p99=$($exitMetrics -join ',')"
+          $exitSummary = "smokeError=$exitErrorCode; serviceError=$exitServiceError; serviceState=$exitServiceState; serviceStateAtSoakStart=$exitSoakStartState; serviceRestarts=$exitRestarts; servicePid=$exitServicePid; soakDurationMs=$exitSoakMs; supervisorEvents=$exitEvents; p99=$($exitMetrics -join ',')"
         } catch { $exitSummary = 'smokeReport=unreadable' }
       }
       throw "Installed application exited during the 10-minute soak ($($app.ExitCode); $exitSummary)."
@@ -326,6 +329,7 @@ try {
   $smoke = Get-Content $report -Raw | ConvertFrom-Json
   if ($smoke.ok -ne $true -or $smoke.soakCompleted -ne $true -or [double]$smoke.soakDurationMs -lt 600000) { throw "Final installed smoke failed: $($smoke.errorCode)." }
   if ($null -eq $smoke.whatsappServiceMemoryMb -or [double]$smoke.whatsappServiceMemoryMb -ge 150) { throw "WhatsApp idle service memory peak exceeded 150 MB or was unavailable: $($smoke.whatsappServiceMemoryMb) MB." }
+  if ($env:GITHUB_STEP_SUMMARY) { "- WhatsApp state at soak start/end: $($smoke.whatsappServiceStateAtSoakStart)/$($smoke.whatsappServiceStateAtSoakEnd); QR observed: $($smoke.qrObserved); this does not claim an account was linked." | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
   if ($smoke.PSObject.Properties.Name -contains 'qr' -or $smoke.PSObject.Properties.Name -contains 'qrPayload') { throw 'Unsafe QR field in final smoke report.' }
   $summary | Add-Member -NotePropertyName whatsappServiceIdleMemoryPeakMB -NotePropertyValue ([double]$smoke.whatsappServiceMemoryMb) -Force
   $resourceReport | ConvertTo-Json -Depth 6 | Set-Content -Path $resourceSamplePath -Encoding utf8

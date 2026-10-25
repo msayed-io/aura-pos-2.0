@@ -197,6 +197,9 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(main, /result\.serviceRestartCount = serviceSupervisor\.restartCount/);
   assert.match(main, /result\.servicePidAtExit = serviceSupervisor\.snapshot\(\)\.pid/);
   assert.match(main, /whatsAppSupervisorLogCodes\.push\(code\)/);
+  assert.match(main, /smokeLiveWhatsAppStates = new Set\(\['qr', 'connecting', 'reconnecting', 'connected'\]\)/);
+  assert.match(main, /whatsappServiceStateAtSoakStart/);
+  assert.match(main, /whatsappServiceStateAtSoakEnd/);
   const serviceSupervisorSource = read('electron/service-supervisor.cjs');
   assert.match(serviceSupervisorSource, /child\.once\('spawn', \(\) => this\.handleSpawn/);
   assert.match(serviceSupervisorSource, /SERVICE_SPAWN_TIMEOUT/);
@@ -230,6 +233,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /serviceState=\$serviceState/);
   assert.match(windowsSmoke, /exitReport\.errorCode/);
   assert.match(windowsSmoke, /soakDurationMs=\$exitSoakMs/);
+  assert.match(windowsSmoke, /serviceStateAtSoakStart=\$exitSoakStartState/);
   assert.match(windowsSmoke, /supervisorEvents=\$exitEvents/);
   assert.match(windowsSmoke, /rendererEventLoopSamples -lt 100/);
   assert.match(windowsSmoke, /rendererEventLoopP95Ms/);
@@ -237,6 +241,7 @@ test('installed Windows load smoke is opt-in, packaged-only, synthetic and local
   assert.match(windowsSmoke, /serviceRestarts=\$serviceRestartCount/);
   assert.match(windowsSmoke, /servicePid=\$servicePid/);
   assert.match(windowsSmoke, /supervisorEvents=\$supervisorEvents/);
+  assert.match(windowsSmoke, /WhatsApp state at soak start\/end/);
   assert.match(windowsSmoke, /loadConversations.*loadReplies.*loadOrders/);
   assert.match(windowsSmoke, /mainEventLoopP99Ms.*serverEventLoopP99Ms.*rendererEventLoopP99Ms/);
   const installerStart = windowsSmoke.indexOf('$proc = Start-Process -FilePath $installer');
