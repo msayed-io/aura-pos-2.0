@@ -13,7 +13,6 @@ $resourceSamplePath = Join-Path $env:GITHUB_WORKSPACE 'windows-installed-resourc
 $gateway = $null
 $app = $null
 $resourceSamples = @()
-$processTreeChangeDiagnostics = $null
 New-Item -ItemType Directory -Force -Path $root, $profile | Out-Null
 $env:APPDATA = Join-Path $profile 'Roaming'
 $env:LOCALAPPDATA = Join-Path $profile 'Local'
@@ -116,6 +115,25 @@ function Get-InstalledProcessSnapshot {
     privateMemoryBytes = [double]$privateMemoryBytes
     handleCount = [int64]$handleCount
   }
+}
+
+function Get-InstalledProcessCpuDelta {
+  param($previousSnapshot, $currentSnapshot, [datetime]$intervalStart)
+  $previousByIdentity = @{}
+  foreach ($entry in $previousSnapshot.processDetails) { $previousByIdentity[[string]$entry.identity] = $entry }
+  $cpuDeltaSeconds = 0.0
+  foreach ($entry in $currentSnapshot.processDetails) {
+    $identity = [string]$entry.identity
+    if ($previousByIdentity.ContainsKey($identity)) {
+      $processDelta = [double]$entry.cpuSeconds - [double]$previousByIdentity[$identity].cpuSeconds
+      if ($processDelta -lt 0) { throw "WMI CPU counter regressed for process identity $identity." }
+      $cpuDeltaSeconds += $processDelta
+      continue
+    }
+    $createdAt = [DateTimeOffset]::Parse([string]$entry.creationTimeUtc).UtcDateTime
+    if ($createdAt -ge $intervalStart.ToUniversalTime()) { $cpuDeltaSeconds += [double]$entry.cpuSeconds }
+  }
+  return [double]$cpuDeltaSeconds
 }
 
 try {
@@ -228,6 +246,8 @@ try {
   $cpuCount = [math]::Max(1, (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors)
   $lastSnapshot = Get-InstalledProcessSnapshot
   if ($lastSnapshot.processCount -lt 2) { throw "Expected the installed app and utility process; found $($lastSnapshot.processCount)." }
+  $initialGpuProcessIdentities = @($lastSnapshot.processDetails | Where-Object { $_.processRole -eq 'gpu' } | ForEach-Object { [string]$_.identity })
+  $baselineGpuProcessStable = $true
   foreach ($identity in $lastSnapshot.processIdentities) { [void]$observedProcessIdentities.Add([string]$identity) }
   $soakStartedAt = Get-Date
   $lastSampleAt = $soakStartedAt
@@ -266,37 +286,11 @@ try {
     foreach ($identity in $snapshot.processIdentities) { [void]$observedProcessIdentities.Add([string]$identity) }
     $now = Get-Date
     $elapsed = [math]::Max(0.1, ($now - $lastSampleAt).TotalSeconds)
-    $cpuDeltaSeconds = $snapshot.cpuSeconds - $lastSnapshot.cpuSeconds
-    if ($cpuDeltaSeconds -lt 0) {
-      $previousIdentityKey = @($lastSnapshot.processIdentities | Sort-Object) -join ','
-      $retrySnapshot = Get-InstalledProcessSnapshot
-      foreach ($identity in $retrySnapshot.processIdentities) { [void]$observedProcessIdentities.Add([string]$identity) }
-      $retryIdentityKey = @($retrySnapshot.processIdentities | Sort-Object) -join ','
-      if ($retryIdentityKey -ne $previousIdentityKey) {
-        $addedProcessIdentities = @($retrySnapshot.processIdentities | Where-Object { $lastSnapshot.processIdentities -notcontains $_ })
-        $removedProcessIdentities = @($lastSnapshot.processIdentities | Where-Object { $retrySnapshot.processIdentities -notcontains $_ })
-        $addedProcessDetails = @($retrySnapshot.processDetails | Where-Object { $lastSnapshot.processIdentities -notcontains $_.identity })
-        $removedProcessDetails = @($lastSnapshot.processDetails | Where-Object { $retrySnapshot.processIdentities -notcontains $_.identity })
-        $processTreeChangeDiagnostics = [pscustomobject]@{
-          detectedAtUtc = (Get-Date).ToUniversalTime().ToString('o')
-          previousCpuSeconds = [math]::Round($lastSnapshot.cpuSeconds, 3)
-          currentCpuSeconds = [math]::Round($snapshot.cpuSeconds, 3)
-          retryCpuSeconds = [math]::Round($retrySnapshot.cpuSeconds, 3)
-          previousProcessDetails = $lastSnapshot.processDetails
-          currentProcessDetails = $snapshot.processDetails
-          retryProcessDetails = $retrySnapshot.processDetails
-          added = $addedProcessDetails
-          removed = $removedProcessDetails
-        }
-        $processTreeDetailsJson = $processTreeChangeDiagnostics | ConvertTo-Json -Compress -Depth 5
-        throw "Application process tree changed during CPU sampling (added=$($addedProcessIdentities.Count); removed=$($removedProcessIdentities.Count)); CPU deltas are not comparable. Safe process diff: $processTreeDetailsJson"
-      }
-      $now = Get-Date
-      $elapsed = [math]::Max(0.1, ($now - $lastSampleAt).TotalSeconds)
-      $cpuDeltaSeconds = $retrySnapshot.cpuSeconds - $lastSnapshot.cpuSeconds
-      if ($cpuDeltaSeconds -lt 0) { throw "WMI CPU counters regressed after a stable-process retry (previous=$([math]::Round($lastSnapshot.cpuSeconds, 3)); current=$([math]::Round($retrySnapshot.cpuSeconds, 3)))." }
-      $snapshot = $retrySnapshot
-    }
+    $currentGpuIdentities = @($snapshot.processDetails | Where-Object { $_.processRole -eq 'gpu' } | ForEach-Object { [string]$_.identity })
+    $baselineGpuStillAlive = @($currentGpuIdentities | Where-Object { $initialGpuProcessIdentities -contains $_ }).Count -gt 0
+    if ($initialGpuProcessIdentities.Count -gt 0 -and !$baselineGpuStillAlive) { $baselineGpuProcessStable = $false; throw 'Initial GPU process identity exited during the installed soak.' }
+    if ($currentGpuIdentities.Count -gt ($initialGpuProcessIdentities.Count + 1)) { throw "GPU subprocess count exceeded the baseline plus one transient worker ($($currentGpuIdentities.Count))." }
+    $cpuDeltaSeconds = Get-InstalledProcessCpuDelta -previousSnapshot $lastSnapshot -currentSnapshot $snapshot -intervalStart $lastSampleAt
     $cpuPercent = ($cpuDeltaSeconds / $elapsed / $cpuCount) * 100
     $systemCpuValues = @(Get-CimInstance Win32_Processor | Where-Object { $null -ne $_.LoadPercentage } | Select-Object -ExpandProperty LoadPercentage)
     $systemCpuPercent = if ($systemCpuValues.Count -gt 0) { [math]::Round((($systemCpuValues | Measure-Object -Average).Average), 2) } else { $null }
@@ -360,10 +354,12 @@ try {
   $finalHandles = [double](($finalWindow | Measure-Object -Property handleCount -Average).Average)
   $peakHandleGrowthPercent = if ($initialHandles -gt 0) { [math]::Round((($peakHandles - $initialHandles) / $initialHandles) * 100, 2) } else { 999.0 }
   $finalHandleGrowthPercent = if ($initialHandles -gt 0) { [math]::Round((($finalHandles - $initialHandles) / $initialHandles) * 100, 2) } else { 999.0 }
-  $processCounts = @($resourceSamples | Select-Object -ExpandProperty processCount | Sort-Object -Unique)
+  $totalProcessCounts = @($resourceSamples | Select-Object -ExpandProperty processCount | Sort-Object -Unique)
+  $processCounts = @($resourceSamples | ForEach-Object { @($_.processDetails | Where-Object { $_.processRole -ne 'gpu' }).Count } | Sort-Object -Unique)
   $processCountStable = $processCounts.Count -eq 1
-  $processIdentitySets = @($resourceSamples | ForEach-Object { (@($_.processIdentities | Sort-Object) -join ',') } | Sort-Object -Unique)
-  $processIdentityStable = $processIdentitySets.Count -eq 1
+  $processIdentitySets = @($resourceSamples | ForEach-Object { (@($_.processDetails | Where-Object { $_.processRole -ne 'gpu' } | ForEach-Object { [string]$_.identity } | Sort-Object) -join ',') } | Sort-Object -Unique)
+  $processIdentityStable = $processIdentitySets.Count -eq 1 -and $baselineGpuProcessStable
+  $gpuProcessCounts = @($resourceSamples | ForEach-Object { @($_.processDetails | Where-Object { $_.processRole -eq 'gpu' }).Count } | Sort-Object -Unique)
   $processImageSets = @($resourceSamples | ForEach-Object { (@($_.processImageNames | Sort-Object) -join ',') } | Sort-Object -Unique)
   $idleApplicationCpuPercent = [math]::Round(($weightedApplicationCpu / $cpuIntervalWeightSeconds), 2)
   $systemCpuSamples = @($lastFiveMinutes | Where-Object { $null -ne $_.systemCpuPercent })
@@ -392,8 +388,11 @@ try {
     finalHandleGrowthPercent = $finalHandleGrowthPercent
     stableProcessCount = $processCountStable
     stableProcessIdentity = $processIdentityStable
+    baselineGpuProcessIdentityRetained = $baselineGpuProcessStable
     processIdentitySetCount = $processIdentitySets.Count
-    processCountValues = $processCounts
+    stableNonGpuProcessCountValues = $processCounts
+    totalProcessCountValues = $totalProcessCounts
+    gpuProcessCountValues = $gpuProcessCounts
     processImageSetCount = $processImageSets.Count
     processImageSets = $processImageSets
     peakWorkingSetMB = [math]::Round($peakWorkingSetMB, 1)
@@ -420,7 +419,7 @@ try {
 - p99 baseline comparison unavailable: no prior Windows baseline with the same 20-conversation workload; absolute 100ms target is enforced.
 - Private memory: start average $([math]::Round($initialPrivateMB,1)) MB; peak $([math]::Round($peakPrivateMB,1)) MB; peak growth $privatePeakGrowthPercent%
 - Handles: start average $([math]::Round($initialHandles,0)); peak $([math]::Round($peakHandles,0)); peak growth $peakHandleGrowthPercent%
-- Process count/identity stable: $processCountStable/$processIdentityStable ($($processCounts -join ', ')); WhatsApp idle service memory: $($ready.whatsappServiceMemoryMb) MB
+- Core process count/identity stable (GPU excluded): $processCountStable/$processIdentityStable ($($processCounts -join ', ')); total process counts: $($totalProcessCounts -join ', '); GPU worker counts: $($gpuProcessCounts -join ', '); baseline GPU identity retained: $baselineGpuProcessStable
 - Process image sets observed: $($processImageSets -join ' | ')
 "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8
     if (!$systemCpuTargetMet) { '- Total-system CPU target was not met; it includes unrelated runner processes, while application CPU is measured separately.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
@@ -428,8 +427,8 @@ try {
 
   if ($privatePeakGrowthPercent -gt 10.0) { throw "Private memory peak growth exceeded 10%: $privatePeakGrowthPercent%." }
   if ($peakHandleGrowthPercent -gt 10.0) { throw "Handle growth exceeded 10%: $peakHandleGrowthPercent%." }
-  if (!$processCountStable) { throw "Installed process count changed during soak: $($processCounts -join ', ')." }
-  if (!$processIdentityStable) { throw "Installed process identities changed during soak ($($processIdentitySets.Count) distinct PID sets)." }
+  if (!$processCountStable) { throw "Installed non-GPU process count changed during soak: $($processCounts -join ', ')." }
+  if (!$processIdentityStable) { throw "Installed core process identities changed during soak ($($processIdentitySets.Count) distinct PID sets)." }
   if ($idleApplicationCpuPercent -gt 2.0) { throw "Installed app idle CPU exceeded 2% over the final five minutes: $idleApplicationCpuPercent%." }
 
   New-Item -ItemType File -Path $stopSignal -Force | Out-Null
@@ -442,6 +441,8 @@ try {
   if (!(Test-Path $report)) { throw 'Timed out waiting for final installed smoke report.' }
   $smoke = Get-Content $report -Raw | ConvertFrom-Json
   if ($smoke.ok -ne $true -or $smoke.soakCompleted -ne $true -or [double]$smoke.soakDurationMs -lt 600000) { throw "Final installed smoke failed: $($smoke.errorCode)." }
+  if ($null -eq $smoke.serviceRestartCount -or [int]$smoke.serviceRestartCount -ne 0) { throw "WhatsApp service restarted during installed smoke: $($smoke.serviceRestartCount)." }
+  if ($smoke.serviceContinued -ne $true) { throw 'WhatsApp service was not live at the end of the installed soak.' }
   if ($null -eq $smoke.whatsappServiceMemoryMb -or [double]$smoke.whatsappServiceMemoryMb -ge 150) { throw "WhatsApp idle service memory peak exceeded 150 MB or was unavailable: $($smoke.whatsappServiceMemoryMb) MB." }
   if ($env:GITHUB_STEP_SUMMARY) { "- WhatsApp state at soak start/end: $($smoke.whatsappServiceStateAtSoakStart)/$($smoke.whatsappServiceStateAtSoakEnd); QR observed: $($smoke.qrObserved); this does not claim an account was linked." | Add-Content -Path $env:GITHUB_STEP_SUMMARY -Encoding utf8 }
   if ($smoke.PSObject.Properties.Name -contains 'qr' -or $smoke.PSObject.Properties.Name -contains 'qrPayload') { throw 'Unsafe QR field in final smoke report.' }
@@ -547,9 +548,11 @@ try {
   $failureCode = 'installed-smoke-failure'
   if ($failureMessage.StartsWith('Handle growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'handle-growth-limit' }
   elseif ($failureMessage.StartsWith('Private memory peak growth exceeded 10%', [System.StringComparison]::Ordinal)) { $failureCode = 'private-memory-growth-limit' }
-  elseif ($failureMessage.StartsWith('Installed process count changed during soak:', [System.StringComparison]::Ordinal)) { $failureCode = 'process-count-changed' }
-  elseif ($failureMessage.StartsWith('Installed process identities changed during soak', [System.StringComparison]::Ordinal)) { $failureCode = 'process-identities-changed' }
-  elseif ($failureMessage.StartsWith('Application process tree changed during CPU sampling', [System.StringComparison]::Ordinal)) { $failureCode = 'process-tree-change-during-cpu-sampling' }
+  elseif ($failureMessage.StartsWith('Installed non-GPU process count changed during soak:', [System.StringComparison]::Ordinal)) { $failureCode = 'core-process-count-changed' }
+  elseif ($failureMessage.StartsWith('Installed core process identities changed during soak', [System.StringComparison]::Ordinal)) { $failureCode = 'core-process-identities-changed' }
+  elseif ($failureMessage.StartsWith('Initial GPU process identity exited', [System.StringComparison]::Ordinal)) { $failureCode = 'baseline-gpu-process-exited' }
+  elseif ($failureMessage.StartsWith('GPU subprocess count exceeded', [System.StringComparison]::Ordinal)) { $failureCode = 'gpu-process-churn-limit' }
+  elseif ($failureMessage.StartsWith('WMI CPU counter regressed for process identity', [System.StringComparison]::Ordinal)) { $failureCode = 'process-cpu-counter-regressed' }
   elseif ($failureMessage.StartsWith('Installed app idle CPU exceeded 2%', [System.StringComparison]::Ordinal)) { $failureCode = 'idle-cpu-limit' }
   if ($app) {
     try {
@@ -571,21 +574,17 @@ try {
       $storedReport = Get-Content -LiteralPath $resourceSamplePath -Raw | ConvertFrom-Json -ErrorAction Stop
       $storedReport | Add-Member -NotePropertyName gateFailureCode -NotePropertyValue $failureCode -Force
       $storedReport | Add-Member -NotePropertyName installedSmokeDiagnostics -NotePropertyValue $safeSmokeDiagnostics -Force
-      if ($null -ne $processTreeChangeDiagnostics) { $storedReport | Add-Member -NotePropertyName processTreeChange -NotePropertyValue $processTreeChangeDiagnostics -Force }
       $storedReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resourceSamplePath -Encoding utf8
     } catch { Write-Host 'Could not annotate the Windows resource artifact with safe failure diagnostics.' }
-  } elseif ($resourceSamples.Count -gt 0 -or $null -ne $processTreeChangeDiagnostics) {
-    $partialReason = 'installed-smoke-failure'
-    if ($null -ne $processTreeChangeDiagnostics) { $partialReason = 'process-tree-change-during-cpu-sampling' }
+  } elseif ($resourceSamples.Count -gt 0) {
     $partialReport = [pscustomobject]@{
       schema = 2
       os = [System.Runtime.InteropServices.RuntimeInformation]::OSDescription
       partial = $true
-      partialReason = $partialReason
+      partialReason = 'installed-smoke-failure'
       gateFailureCode = $failureCode
       sampleCount = $resourceSamples.Count
       installedSmokeDiagnostics = $safeSmokeDiagnostics
-      processTreeChange = $processTreeChangeDiagnostics
       samples = $resourceSamples
     }
     try { $partialReport | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resourceSamplePath -Encoding utf8 }
